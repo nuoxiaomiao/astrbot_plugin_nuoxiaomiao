@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.ruff_cache/
+
+# 运行时数据：聊天速览 SQLite、转存图片等（防止更新/重装插件时数据被覆盖）
+data/
+
+# 用户配置快照（含个人默认、运行时内容）
+*_config.json
+
+# 开发工具目录
+.agents/
+.aws/
+.claude/
+.codex/
+.zcode/
+.cursor/
+.vscode/
+.idea/

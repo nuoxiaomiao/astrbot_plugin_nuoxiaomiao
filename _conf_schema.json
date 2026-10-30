@@ -1,0 +1,876 @@
+{
+  "enabled": {
+    "description": "【总览】启用插件",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后，本插件的消息合并、回复、互动、记录和自醒停止；各项设置保留。",
+    "group": "总览"
+  },
+  "debounce_enabled": {
+    "description": "【消息合并】防抖合并",
+    "type": "bool",
+    "default": true,
+    "hint": "同一用户连续发送的消息先合并再交给模型。与连刷检测名单分开生效。",
+    "group": "消息合并"
+  },
+  "debounce_dynamic_enabled": {
+    "description": "【消息合并】根据消息内容选择等待时间",
+    "type": "bool",
+    "default": true,
+    "hint": "开启：完整句、短句、只叫名字分别使用下方等待时间。关闭：统一使用固定等待。",
+    "group": "消息合并"
+  },
+  "debounce_group_enabled": {
+    "description": "【消息合并】群聊防抖",
+    "type": "bool",
+    "default": true,
+    "hint": "群聊里是否启用防抖。",
+    "group": "消息合并"
+  },
+  "debounce_private_enabled": {
+    "description": "【消息合并】私聊防抖",
+    "type": "bool",
+    "default": true,
+    "hint": "私聊里是否启用防抖。",
+    "group": "消息合并"
+  },
+  "debounce_user_whitelist": {
+    "description": "【消息合并】只对这些人防抖",
+    "type": "list",
+    "default": [],
+    "hint": "填用户 ID。留空 = 所有人；填了 = 只对名单里的人。",
+    "group": "消息合并"
+  },
+  "debounce_group_whitelist": {
+    "description": "【消息合并】只在这些群防抖合并（群白名单）",
+    "type": "list",
+    "default": [],
+    "hint": "填群号或群名。非空时该功能只对名单内的群生效；留空 = 不限制（黑名单优先）。",
+    "group": "消息合并"
+  },
+  "debounce_group_blacklist": {
+    "description": "【消息合并】这些群不防抖合并（群黑名单）",
+    "type": "list",
+    "default": [],
+    "hint": "填群号或群名。名单内的群该功能一律不生效，优先级高于白名单。",
+    "group": "消息合并"
+  },
+  "debounce_fast_idle_seconds": {
+    "description": "【消息合并】完整句等待（秒）",
+    "type": "float",
+    "default": 0.0,
+    "hint": "仅在按内容选择等待时生效。达到字数阈值或以句末标点结尾时等待这么久；0 表示立即放行。",
+    "slider": {
+      "min": 0.0,
+      "max": 2.0,
+      "step": 0.1
+    },
+    "group": "消息合并"
+  },
+  "debounce_slow_idle_seconds": {
+    "description": "【消息合并】短句等待（秒）",
+    "type": "float",
+    "default": 1.2,
+    "hint": "仅在按内容选择等待时生效。短句未说完时等待；同一用户继续发消息会重新计时。",
+    "slider": {
+      "min": 0.3,
+      "max": 5.0,
+      "step": 0.1
+    },
+    "group": "消息合并"
+  },
+  "debounce_wake_idle_seconds": {
+    "description": "【消息合并】只叫名字等待（秒）",
+    "type": "float",
+    "default": 4.0,
+    "hint": "仅在按内容选择等待时生效。只有唤醒词、尚未说明内容时多等一会，便于接上下一句。",
+    "slider": {
+      "min": 0.0,
+      "max": 10.0,
+      "step": 0.5
+    },
+    "group": "消息合并"
+  },
+  "debounce_typing_enabled": {
+    "description": "【消息合并】私聊按「正在输入」等",
+    "type": "bool",
+    "default": true,
+    "hint": "只支持私聊中“正在输入”的平台通知。群聊没有这个信号；其他平台仍按等待时间放行。",
+    "group": "消息合并"
+  },
+  "debounce_typing_hold_seconds": {
+    "description": "【消息合并】输入信号延长（秒）",
+    "type": "float",
+    "default": 5.0,
+    "hint": "每收到一次「正在输入」就延长这么久；没信号最迟这么久后也回。",
+    "slider": {
+      "min": 0.5,
+      "max": 15.0,
+      "step": 0.5
+    },
+    "group": "消息合并"
+  },
+  "debounce_long_chars": {
+    "description": "【消息合并】多少字算说完",
+    "type": "int",
+    "default": 12,
+    "hint": "单句达到这个字数就算说完，不再等。",
+    "slider": {
+      "min": 4,
+      "max": 100,
+      "step": 1
+    },
+    "group": "消息合并"
+  },
+  "debounce_end_punctuation": {
+    "description": "【消息合并】句末标点",
+    "type": "string",
+    "default": "。！？!?…~",
+    "hint": "消息以这些字符结尾就算说完。直接写字符，不用加空格。",
+    "group": "消息合并"
+  },
+  "debounce_max_parts": {
+    "description": "【消息合并】一批最多合并几句",
+    "type": "int",
+    "default": 8,
+    "hint": "攒够这个条数立刻合并回复，不再等。",
+    "slider": {
+      "min": 1,
+      "max": 30,
+      "step": 1
+    },
+    "group": "消息合并"
+  },
+  "merge_idle_seconds": {
+    "description": "【消息合并】固定等待（秒）",
+    "type": "int",
+    "default": 4,
+    "hint": "仅在关闭“根据消息内容选择等待时间”后生效；单位为秒。0 表示不额外等待。",
+    "slider": {
+      "min": 0,
+      "max": 15,
+      "step": 1
+    },
+    "group": "消息合并"
+  },
+  "merge_max_total_seconds": {
+    "description": "【消息合并】合并最长等待（秒）",
+    "type": "int",
+    "default": 12,
+    "hint": "从第一条消息起最多等这么久，到点强制合并回复。",
+    "slider": {
+      "min": 3,
+      "max": 60,
+      "step": 1
+    },
+    "group": "消息合并"
+  },
+  "merge_join_separator": {
+    "description": "【消息合并】合并分隔符",
+    "type": "string",
+    "default": "\n",
+    "hint": "多句话拼成一条时中间插入的字符。",
+    "group": "消息合并"
+  },
+  "merge_localize_images": {
+    "description": "【消息合并】图片先存本地",
+    "type": "bool",
+    "default": true,
+    "hint": "合并包含图片的消息时先保存本地，避免等待期间远程链接失效。仅影响图片合并。",
+    "group": "消息合并"
+  },
+  "human_reply_enabled": {
+    "description": "【回复节奏】按打字速度分条回复",
+    "type": "bool",
+    "default": false,
+    "hint": "先让其他输出插件清洗、拦截或转换内容，再接管尚未发送的短纯文本并分条发送。其他插件已分段发送、图片、转发和流式回复会让路。",
+    "group": "回复节奏"
+  },
+  "human_reply_chars_per_minute": {
+    "description": "【回复节奏】打字速度（字/分钟）",
+    "type": "int",
+    "default": 240,
+    "hint": "单位为字/分钟。默认 240；设为 60～90 更接近慢速真人输入，但等待明显变长。每条气泡还受最长等待限制。",
+    "slider": {
+      "min": 30,
+      "max": 600,
+      "step": 10
+    },
+    "group": "回复节奏"
+  },
+  "human_reply_interrupt_enabled": {
+    "description": "【回复节奏】用户插话时中止未开口的回复",
+    "type": "bool",
+    "default": true,
+    "hint": "同一用户插话时，可中止仍在生成或尚未发出第一条气泡的回复；已经开口的回复会发完，新消息排队下一轮。",
+    "group": "回复节奏"
+  },
+  "human_reply_show_input_status": {
+    "description": "【回复节奏】打字时显示「正在输入」",
+    "type": "bool",
+    "default": true,
+    "hint": "私聊（NapCat）打字期间向对方显示「正在输入…」，失败静默不影响回复。",
+    "group": "回复节奏"
+  },
+  "human_reply_max_wait_seconds": {
+    "description": "【回复节奏】单条气泡最长等待（秒）",
+    "type": "float",
+    "default": 20.0,
+    "hint": "单条气泡的打字等待上限，防止超长气泡把人晾太久。",
+    "slider": {
+      "min": 1.0,
+      "max": 60.0,
+      "step": 1.0
+    },
+    "group": "回复节奏"
+  },
+  "human_reply_max_length": {
+    "description": "【回复节奏】接管上限（字数）",
+    "type": "int",
+    "default": 300,
+    "hint": "只接管不超过此字数的纯文本。0 表示不限长度；图片、转发和流式输出始终不接管。",
+    "slider": {
+      "min": 0,
+      "max": 2000,
+      "step": 50
+    },
+    "group": "回复节奏"
+  },
+  "human_reply_group_whitelist": {
+    "description": "【回复节奏】只在这些群拟人回复（群白名单）",
+    "type": "list",
+    "default": [],
+    "hint": "填群号或群名。非空时该功能只对名单内的群生效；留空 = 不限制（黑名单优先）。",
+    "group": "回复节奏"
+  },
+  "human_reply_group_blacklist": {
+    "description": "【回复节奏】这些群不拟人回复（群黑名单）",
+    "type": "list",
+    "default": [],
+    "hint": "填群号或群名。名单内的群该功能一律不生效，优先级高于白名单。",
+    "group": "回复节奏"
+  },
+  "trigger_rounds": {
+    "description": "【拦截与互动】连刷触发轮数",
+    "type": "int",
+    "default": 3,
+    "hint": "同一人连续触发满这次数，就拦下这条并发表情。",
+    "slider": {
+      "min": 2,
+      "max": 10,
+      "step": 1
+    },
+    "group": "拦截与互动"
+  },
+  "window_seconds": {
+    "description": "【拦截与互动】连刷窗口秒数",
+    "type": "int",
+    "default": 180,
+    "hint": "超过这个时间没有新触发，计数清零重来。",
+    "slider": {
+      "min": 30,
+      "max": 1800,
+      "step": 30
+    },
+    "group": "拦截与互动"
+  },
+  "include_group": {
+    "description": "【拦截与互动】群聊连刷拦截",
+    "type": "bool",
+    "default": true,
+    "hint": "只控制群聊的连刷检测，不是群聊总开关；关键词唤醒、防抖、自醒有各自设置。",
+    "group": "拦截与互动"
+  },
+  "include_private": {
+    "description": "【拦截与互动】私聊连刷拦截",
+    "type": "bool",
+    "default": true,
+    "hint": "只控制私聊的连刷检测，不是私聊总开关。",
+    "group": "拦截与互动"
+  },
+  "poke_reply_enabled": {
+    "description": "【拦截与互动】被戳回应",
+    "type": "bool",
+    "default": true,
+    "hint": "开：被戳时让模型回一句。",
+    "group": "拦截与互动"
+  },
+  "poke_reply_prompt": {
+    "description": "【拦截与互动】被戳回应提示词",
+    "type": "text",
+    "default": "{username} 戳了你一下, 请你用一句话回复一下, 确保符合人设的同时夹带生气甚至愤怒的情绪, 考虑上下文, 确保通顺不突兀",
+    "hint": "被戳时发给模型的话，{username} 会替换成戳你的人。",
+    "group": "拦截与互动"
+  },
+  "poke_reply_cooldown_seconds": {
+    "description": "【拦截与互动】群聊被戳冷却（秒）",
+    "type": "float",
+    "default": 0.5,
+    "hint": "群里被戳后，这段时间内再戳不回。私聊不受影响。",
+    "slider": {
+      "min": 0.1,
+      "max": 3.0,
+      "step": 0.1
+    },
+    "group": "拦截与互动"
+  },
+  "poke_group_whitelist": {
+    "description": "【拦截与互动】只在这些群回应被戳（群白名单）",
+    "type": "list",
+    "default": [],
+    "hint": "填群号或群名。非空时该功能只对名单内的群生效；留空 = 不限制（黑名单优先）。",
+    "group": "拦截与互动"
+  },
+  "poke_group_blacklist": {
+    "description": "【拦截与互动】这些群被戳不理（群黑名单）",
+    "type": "list",
+    "default": [],
+    "hint": "填群号或群名。名单内的群该功能一律不生效，优先级高于白名单。",
+    "group": "拦截与互动"
+  },
+  "blocked_users": {
+    "description": "【拦截与互动】屏蔽用户",
+    "type": "list",
+    "default": [],
+    "hint": "填写用户 ID。这些用户发来的消息不回复，指令和 AI 对话也会被拦截。",
+    "group": "拦截与互动"
+  },
+  "user_whitelist": {
+    "description": "【拦截与互动】连刷豁免用户（不影响防抖）",
+    "type": "list",
+    "default": [],
+    "hint": "只免除连刷拦截，仍受屏蔽用户、防抖合并等设置影响。填写用户 ID；留空表示无人豁免。",
+    "group": "拦截与互动"
+  },
+  "user_blacklist": {
+    "description": "【拦截与互动】连刷检测用户（留空检测全部）",
+    "type": "list",
+    "default": [],
+    "hint": "这是连刷检测范围，不是屏蔽名单。留空检测所有人；填写后只检测这些用户。连刷豁免名单优先。",
+    "group": "拦截与互动"
+  },
+  "guard_group_whitelist": {
+    "description": "【拦截与互动】只在这些群刷屏拦截（群白名单）",
+    "type": "list",
+    "default": [],
+    "hint": "填群号或群名。非空时该功能只对名单内的群生效；留空 = 不限制（黑名单优先）。",
+    "group": "拦截与互动"
+  },
+  "guard_group_blacklist": {
+    "description": "【拦截与互动】这些群不刷屏拦截（群黑名单）",
+    "type": "list",
+    "default": [],
+    "hint": "填群号或群名。名单内的群该功能一律不生效，优先级高于白名单。",
+    "group": "拦截与互动"
+  },
+  "meme_tags": {
+    "description": "【拦截与互动】meme_manager 表情分类",
+    "type": "list",
+    "default": [
+      "angry",
+      "baka"
+    ],
+    "hint": "从 meme_manager 的这些分类里随机发表情，如 angry、baka。",
+    "group": "拦截与互动"
+  },
+  "meme_cooldown_seconds": {
+    "description": "【拦截与互动】表情冷却（秒）",
+    "type": "int",
+    "default": 60,
+    "hint": "同一人重复触发时，两次表情至少隔这么久。0 = 不冷却。",
+    "slider": {
+      "min": 0,
+      "max": 600,
+      "step": 10
+    },
+    "group": "拦截与互动"
+  },
+  "keyword_wake_enabled": {
+    "description": "【拦截与互动】关键词唤醒",
+    "type": "bool",
+    "default": false,
+    "hint": "开：群消息不带 @，但提到关键词也回。",
+    "group": "拦截与互动"
+  },
+  "keyword_wake_list": {
+    "description": "【拦截与互动】关键词唤醒列表",
+    "type": "list",
+    "default": [],
+    "hint": "消息里出现任一关键词就唤醒，如：小喵、江楠、楠酱。",
+    "group": "拦截与互动"
+  },
+  "keyword_wake_group_whitelist": {
+    "description": "【拦截与互动】只在这些群关键词唤醒（群白名单）",
+    "type": "list",
+    "default": [],
+    "hint": "填群号或群名。非空时该功能只对名单内的群生效；留空 = 不限制（黑名单优先）。",
+    "group": "拦截与互动"
+  },
+  "keyword_wake_group_blacklist": {
+    "description": "【拦截与互动】这些群关键词不唤醒（群黑名单）",
+    "type": "list",
+    "default": [],
+    "hint": "填群号或群名。名单内的群该功能一律不生效，优先级高于白名单。",
+    "group": "拦截与互动"
+  },
+  "activity_buffer_enabled": {
+    "description": "【聊天记录与参考】记录聊天消息",
+    "type": "bool",
+    "default": true,
+    "hint": "把近期聊天写入本插件的记录库，供会话速览与近况参考使用；与 LivingMemory 长期记忆分工不同。",
+    "group": "聊天记录与参考"
+  },
+  "activity_record_private": {
+    "description": "【聊天记录与参考】也记录私聊消息",
+    "type": "bool",
+    "default": true,
+    "hint": "开：私聊也记；关：只记群聊。",
+    "group": "聊天记录与参考"
+  },
+  "activity_group_whitelist": {
+    "description": "【聊天记录与参考】只记这些群的速览（群白名单）",
+    "type": "list",
+    "default": [],
+    "hint": "填群号或群名。非空时该功能只对名单内的群生效；留空 = 不限制（黑名单优先）。",
+    "group": "聊天记录与参考"
+  },
+  "activity_group_blacklist": {
+    "description": "【聊天记录与参考】这些群不记速览（群黑名单）",
+    "type": "list",
+    "default": [],
+    "hint": "填群号或群名。名单内的群该功能一律不生效，优先级高于白名单。",
+    "group": "聊天记录与参考"
+  },
+  "activity_record_bot_replies": {
+    "description": "【聊天记录与参考】也记录机器人自己的回复",
+    "type": "bool",
+    "default": true,
+    "hint": "记录机器人自己的回复和主动消息，便于查看完整近况。仅在聊天记录开启时生效。",
+    "group": "聊天记录与参考"
+  },
+  "activity_buffer_max_text_chars": {
+    "description": "【聊天记录与参考】单条最多记多少字",
+    "type": "int",
+    "default": 200,
+    "hint": "超长消息截断保存。",
+    "slider": {
+      "min": 50,
+      "max": 1000,
+      "step": 50
+    },
+    "group": "聊天记录与参考"
+  },
+  "activity_retention_days": {
+    "description": "【聊天记录与参考】记录保留几天",
+    "type": "int",
+    "default": 7,
+    "hint": "超过这个天数的记录自动清理。",
+    "slider": {
+      "min": 1,
+      "max": 90,
+      "step": 1
+    },
+    "group": "聊天记录与参考"
+  },
+  "activity_require_admin": {
+    "description": "【聊天记录与参考】仅主人/管理员可查看",
+    "type": "bool",
+    "default": true,
+    "hint": "开：只有主人或管理员能让 bot 查看其它会话（群聊私聊里都行）；关：任何人都能查。",
+    "group": "聊天记录与参考"
+  },
+  "activity_tool_enabled": {
+    "description": "【聊天记录与参考】允许模型查看记录",
+    "type": "bool",
+    "default": true,
+    "hint": "让模型通过 list_conversations / read_conversation_messages 主动查询近期记录；查询权限由“仅主人/管理员可查看”控制。",
+    "group": "聊天记录与参考"
+  },
+  "activity_hint_enabled": {
+    "description": "【聊天记录与参考】告诉模型可以查看聊天记录",
+    "type": "bool",
+    "default": true,
+    "hint": "在可用工具的请求中提供简短能力索引。它只说明功能存在，不会替用户发起查询。",
+    "group": "聊天记录与参考"
+  },
+  "activity_prefetch_enabled": {
+    "description": "【聊天记录与参考】命中关键词时直接预取别处聊天",
+    "type": "bool",
+    "default": true,
+    "hint": "命中下方关键词后，直接把相关近期记录作为本轮参考，不等待模型调用工具。与长期记忆预取不同。",
+    "group": "聊天记录与参考"
+  },
+  "activity_prefetch_keywords": {
+    "description": "【聊天记录与参考】触发预取的关键词",
+    "type": "list",
+    "default": [],
+    "hint": "留空 = 用内置词表（别的群、群里在聊、聊了什么、翻记录…）。填了就只用你填的这些；逗号或换行分隔。",
+    "group": "聊天记录与参考"
+  },
+  "lmem_gateway_enabled": {
+    "description": "【聊天记录与参考】按需查询长期记忆（LivingMemory）",
+    "type": "bool",
+    "default": true,
+    "hint": "仅在命中记忆触发词且模型未带 LivingMemory 自带检索工具时预取，避免重复查询。未安装或不可用时跳过。",
+    "group": "聊天记录与参考"
+  },
+  "lmem_gateway_keywords": {
+    "description": "【聊天记录与参考】记忆触发词",
+    "type": "list",
+    "default": [
+      "还记得",
+      "记不记得",
+      "忘了吗",
+      "忘了没",
+      "回忆",
+      "上次",
+      "之前",
+      "以前",
+      "那天",
+      "当时",
+      "早就说过",
+      "我说过",
+      "答应",
+      "约定",
+      "我的喜好",
+      "我喜欢",
+      "我的生日",
+      "我是谁"
+    ],
+    "hint": "命中任一关键词才查询长期记忆。留空使用内置词表；关闭功能请使用上方开关。",
+    "group": "聊天记录与参考"
+  },
+  "lmem_gateway_top_k": {
+    "description": "【聊天记录与参考】最多取几条记忆",
+    "type": "int",
+    "default": 4,
+    "hint": "一次检索最多返回这么多条。",
+    "slider": {
+      "min": 1,
+      "max": 20,
+      "step": 1
+    },
+    "group": "聊天记录与参考"
+  },
+  "lmem_gateway_timeout_seconds": {
+    "description": "【聊天记录与参考】检索超时（秒）",
+    "type": "float",
+    "default": 2.5,
+    "hint": "超过这个时间就放弃检索、照常回复，不卡聊天。",
+    "slider": {
+      "min": 0.5,
+      "max": 10.0,
+      "step": 0.5
+    },
+    "group": "聊天记录与参考"
+  },
+  "lmem_gateway_max_chars": {
+    "description": "【聊天记录与参考】记忆最多多少字",
+    "type": "int",
+    "default": 600,
+    "hint": "返回的记忆拼起来超过这个长度就截断。",
+    "slider": {
+      "min": 100,
+      "max": 4000,
+      "step": 100
+    },
+    "group": "聊天记录与参考"
+  },
+  "proactive_enabled": {
+    "description": "【主动消息】允许主动发送消息",
+    "type": "bool",
+    "default": true,
+    "hint": "允许模型调用 send_message 即时向允许的目标发消息。静默时段会顺延；此开关也是自醒的前提。",
+    "group": "主动消息"
+  },
+  "proactive_hint_enabled": {
+    "description": "【主动消息】告诉模型可以主动发送",
+    "type": "bool",
+    "default": true,
+    "hint": "在能力索引中说明 send_message 可用。只提示能力存在，不安排定时任务。",
+    "group": "主动消息"
+  },
+  "proactive_allow_groups": {
+    "description": "【主动消息】允许发主动消息的群",
+    "type": "list",
+    "default": [],
+    "hint": "填写群号或群名，每行一项。只有名单中的群允许接收主动消息；留空表示不允许向任何群主动发送。",
+    "group": "主动消息"
+  },
+  "proactive_target_whitelist": {
+    "description": "【主动消息】允许被主动私聊的人",
+    "type": "list",
+    "default": [],
+    "hint": "填写用户 ID，每行一项。这是额外允许主动私聊的人；主人/管理员始终允许。留空只保留主人/管理员。",
+    "group": "主动消息"
+  },
+  "proactive_max_pending_per_person": {
+    "description": "【主动消息】同一目标最多排队几条",
+    "type": "int",
+    "default": 3,
+    "hint": "静默时段内，向同一目标发送的消息最多排队这么多条；超出时拒绝新增，不是定时提醒功能。",
+    "slider": {
+      "min": 1,
+      "max": 5,
+      "step": 1
+    },
+    "group": "主动消息"
+  },
+  "proactive_daily_limit_per_person": {
+    "description": "【主动消息】同一目标每天最多发送几次",
+    "type": "int",
+    "default": 10,
+    "hint": "同一群或同一私聊目标每天允许发送的主动消息次数。自醒是否发出消息也受此限制。",
+    "slider": {
+      "min": 1,
+      "max": 30,
+      "step": 1
+    },
+    "group": "主动消息"
+  },
+  "proactive_cooldown_minutes": {
+    "description": "【主动消息】同一目标冷却（分钟）",
+    "type": "int",
+    "default": 10,
+    "hint": "两次主动消息之间至少隔这么久。0 = 不冷却。",
+    "slider": {
+      "min": 0,
+      "max": 720,
+      "step": 5
+    },
+    "group": "主动消息"
+  },
+  "proactive_context_other_sessions": {
+    "description": "【主动消息】发送前参考其他群的近况",
+    "type": "bool",
+    "default": true,
+    "hint": "主动发送前，把近期其他允许会话的聊天作为参考；关闭后只看目标会话和待发送内容。",
+    "group": "主动消息"
+  },
+  "proactive_context_other_private": {
+    "description": "【主动消息】其他会话参考中包含私聊",
+    "type": "bool",
+    "default": false,
+    "hint": "仅在其他会话参考开启时生效。关闭时排除其他人的私聊；开启后它们也可能进入主动发送和自醒参考。",
+    "group": "主动消息"
+  },
+  "proactive_quiet_hours_start": {
+    "description": "【主动消息】静默时段开始",
+    "type": "string",
+    "default": "00:00",
+    "hint": "使用页面显示的进程时区，格式 HH:MM。静默期间主动消息顺延，自醒跳过；可跨午夜。开始与结束相同表示不设静默时段。",
+    "group": "主动消息"
+  },
+  "proactive_quiet_hours_end": {
+    "description": "【主动消息】静默时段结束",
+    "type": "string",
+    "default": "08:00",
+    "hint": "使用页面显示的进程时区，格式 HH:MM。此时恢复发送；开始与结束相同表示不设静默时段。",
+    "group": "主动消息"
+  },
+  "proactive_silent_wake_enabled": {
+    "description": "【自醒】静默自醒",
+    "type": "bool",
+    "default": true,
+    "hint": "需要主动消息开启。安静一段时间后自动起一轮模型活动，可以思考、查工具或决定发言；自醒次数不等于发送次数。",
+    "group": "自醒"
+  },
+  "proactive_judge_provider_id": {
+    "description": "【自醒】自醒使用的模型",
+    "type": "string",
+    "default": "",
+    "hint": "选择已加载的聊天模型。留空使用全局默认模型；指定模型不可用时本轮失败，不自动切换到其他模型。",
+    "group": "自醒"
+  },
+  "proactive_silent_wake_target_mean_minutes": {
+    "description": "【自醒】自醒目标均值（分钟）",
+    "type": "float",
+    "default": 30,
+    "hint": "决定安静时长对应的唤醒概率分布，不是固定闹钟。必须位于安静下限 + 1 与上限 − 1 分钟之间。",
+    "slider": {
+      "min": 6,
+      "max": 59,
+      "step": 1
+    },
+    "group": "自醒"
+  },
+  "proactive_silent_wake_floor_minutes": {
+    "description": "【自醒】自醒安静下限（分钟）",
+    "type": "float",
+    "default": 5,
+    "hint": "安静不足此时长不会自醒。上限必须至少比下限多 2 分钟。",
+    "slider": {
+      "min": 1,
+      "max": 30,
+      "step": 1
+    },
+    "group": "自醒"
+  },
+  "proactive_silent_wake_ceil_minutes": {
+    "description": "【自醒】自醒安静上限（分钟）",
+    "type": "float",
+    "default": 60,
+    "hint": "安静达到此时长后，下一次轮询会触发自醒；仍受静默时段、日预算和模型可用性限制。",
+    "slider": {
+      "min": 10,
+      "max": 240,
+      "step": 5
+    },
+    "group": "自醒"
+  },
+  "proactive_silent_wake_daily_budget": {
+    "description": "【自醒】每天最多自醒几次",
+    "type": "int",
+    "default": 15,
+    "hint": "按页面显示的进程时区，每天最多开始这么多轮自醒。无论最后有没有发言都计一轮；0 表示不自醒。",
+    "slider": {
+      "min": 0,
+      "max": 60,
+      "step": 1
+    },
+    "group": "自醒"
+  },
+  "proactive_silent_wake_max_steps": {
+    "description": "【自醒】自醒单次最多几步",
+    "type": "int",
+    "default": 8,
+    "hint": "自醒会起一轮完整 agent 活动（可以思考、调工具查东西、想说话就发）。这里是单次最多走几步，也就是单次成本上限。调小能省钱但能做的事变少。",
+    "slider": {
+      "min": 1,
+      "max": 30,
+      "step": 1
+    },
+    "group": "自醒"
+  },
+  "proactive_silent_wake_tool_plugins": {
+    "description": "【自醒】自醒时可用的插件工具",
+    "type": "list",
+    "default": [],
+    "hint": "旧版迁移来源。首次加载将非空插件名单冻结为具体工具；空名单改为基础工具，不再表示全部。请使用额外自主工具设置。",
+    "group": "自醒"
+  },
+  "proactive_silent_wake_allow_tools": {
+    "description": "【自醒】自醒时使用完整工具流程",
+    "type": "bool",
+    "default": true,
+    "hint": "开启时运行完整工具流程；关闭时只做简短判断并按允许目标发送，不调用其他插件工具。",
+    "group": "自醒"
+  },
+  "force_wake_prefix": {
+    "description": "【高级】合成消息唤醒前缀",
+    "type": "string",
+    "default": "",
+    "hint": "一般留空，自动沿用当前会话真实唤醒前缀。只有合成消息无法正常唤醒时才设置覆盖值。",
+    "group": "高级"
+  },
+  "merge_localize_images_dir": {
+    "description": "【高级】图片存放目录",
+    "type": "string",
+    "default": "",
+    "hint": "通常留空使用插件 data 目录。填写绝对路径后改用该位置；目录需要进程具备读写权限。",
+    "group": "高级"
+  },
+  "tool_call_prompt_enabled": {
+    "description": "【高级】自定义工具提示词",
+    "type": "bool",
+    "default": true,
+    "hint": "替换 AstrBot 的通用工具调用说明。各功能的能力索引与权限仍由对应设置控制。",
+    "group": "高级"
+  },
+  "tool_call_prompt": {
+    "description": "【高级】工具调用提示词",
+    "type": "text",
+    "textarea": true,
+    "default": "使用工具时：严格按工具 schema 传参，不要编造参数；根据工具结果回答，信息不足时补充查询；中间步骤保持安静，等本轮工具任务完成后统一回复；开始新任务时可简短说明意图，避免每次调用前重复解释；保持对话风格与人设一致。",
+    "hint": "仅在自定义工具提示词开启且本轮有工具时使用。留空用插件内置文案；已保存的自定义文本会保留。",
+    "group": "高级"
+  },
+  "capability_hint_text": {
+    "description": "【高级】能力提示文案",
+    "type": "text",
+    "textarea": true,
+    "default": "",
+    "hint": "留空使用内置能力索引。填写后原样作为自定义能力索引；请同步删除已关闭功能的说明。",
+    "group": "高级"
+  },
+  "capability_context_digest": {
+    "description": "【高级】每轮直接提供其他群近况",
+    "type": "bool",
+    "default": false,
+    "hint": "直接把其他会话近况放入本轮参考，与让模型主动查记录不同；开关关闭时不影响工具查询。",
+    "group": "高级"
+  },
+  "activity_db_path": {
+    "description": "【高级】记录库位置",
+    "type": "string",
+    "default": "",
+    "hint": "通常留空使用插件 data 目录。填写绝对路径后改用该位置；目录需要进程具备读写权限。",
+    "group": "高级"
+  },
+  "lmem_gateway_plugin_name": {
+    "description": "【高级】记忆插件注册名",
+    "type": "string",
+    "default": "LivingMemory",
+    "hint": "LivingMemory 的插件注册名，用于兼容查找。通常无需修改；注册名与目录名可能不同。",
+    "group": "高级"
+  },
+  "lmem_gateway_recall_tool_name": {
+    "description": "【高级】记忆检索工具名",
+    "type": "string",
+    "default": "recall_long_term_memory",
+    "hint": "LivingMemory 的记忆检索工具名，通常无需修改。",
+    "group": "高级"
+  },
+  "resident_inbox_enabled": {
+    "description": "【聊天记录与参考】未读信箱",
+    "type": "bool",
+    "default": true,
+    "hint": "按实际阅读的记录逐条标记已读；历史翻页默认不改已读状态。",
+    "group": "聊天记录与参考"
+  },
+  "resident_state_enabled": {
+    "description": "【自主状态】自主状态与风格提案",
+    "type": "bool",
+    "default": true,
+    "hint": "同人设共享心情标签和强度，具体关注点按会话隔离。风格建议需要管理员批准。",
+    "group": "自主状态"
+  },
+  "resident_extra_tools": {
+    "description": "【自醒】额外自主工具",
+    "type": "list",
+    "default": [],
+    "hint": "在基础记录、记忆读取、计划、状态与发信工具之外，逐项选择工具。新增工具不会自动获准。嵌套分发及后台工具缺少权限传递接口时不可选择。",
+    "group": "自醒"
+  },
+  "resident_tools_migrated": {
+    "description": "【高级】已迁移自主工具选择",
+    "type": "bool",
+    "default": false,
+    "hint": "迁移标记，由插件自动维护。旧插件级名单仅迁移一次。",
+    "group": "高级"
+  },
+  "resident_run_token_limit": {
+    "description": "【自醒】单轮 token 阈值",
+    "type": "int",
+    "default": 0,
+    "hint": "未缓存输入加输出；0 不额外限制。达到阈值后不再发起后续请求，单次请求可能越过阈值。",
+    "group": "自醒",
+    "slider": {
+      "min": 0,
+      "max": 10000000,
+      "step": 1000
+    }
+  },
+  "resident_daily_token_limit": {
+    "description": "【自醒】每日 token 阈值",
+    "type": "int",
+    "default": 0,
+    "hint": "仅计算糯小喵自主运行；0 不额外限制。模型用量缺失时，启用阈值将停止后续请求。",
+    "group": "自醒",
+    "slider": {
+      "min": 0,
+      "max": 100000000,
+      "step": 1000
+    }
+  }
+}

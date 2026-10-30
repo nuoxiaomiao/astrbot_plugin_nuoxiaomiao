@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>糯小喵 · 配置</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+  <div class="app" id="app" hidden>
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><span class="brand-icon" aria-hidden="true">喵</span><div><strong>糯小喵</strong><small>配置中心</small></div><button id="drawer-close" class="icon-button mobile-only" type="button" aria-label="关闭导航">×</button></div>
+      <nav id="tabs" aria-label="配置导航"></nav>
+      <div class="sidebar-note">各功能独立设置。<br>修改先暂存，点击保存后生效。</div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <button id="drawer-toggle" class="icon-button mobile-only" type="button" aria-label="打开配置导航">☰</button>
+        <div class="search-wrap"><input id="search" type="search" placeholder="搜索功能、配置项或说明" aria-label="搜索配置" autocomplete="off"><button id="search-clear" class="icon-button" type="button" aria-label="清空搜索" hidden>×</button></div>
+        <label class="pending-filter"><input id="pending-only" type="checkbox">仅看待保存</label>
+        <button id="theme-toggle" class="icon-button" type="button" aria-label="切换深浅主题" title="切换深浅主题">◐</button>
+      </header>
+      <div class="page-heading"><div><p class="eyebrow">CONFIGURATION</p><h1 id="page-title">总览</h1><p id="page-description"></p></div><span id="timezone" class="timezone"></span></div>
+      <div id="banner" class="notice warning" hidden></div>
+      <div id="diagnostics" class="diagnostics" aria-live="polite"></div>
+      <div id="error-summary" class="notice error" role="alert" hidden></div>
+      <div id="pane" class="pane"></div>
+      <footer class="savebar">
+        <div class="save-status"><strong id="dirty">没有待保存的修改</strong><small id="save-detail">配置加载后可编辑</small></div>
+        <div class="save-actions"><button id="revert" class="button quiet" type="button" disabled>撤销修改</button><div class="dropdown"><button id="default-menu-btn" class="button quiet" type="button" aria-haspopup="true" aria-expanded="false">默认设置 ▾</button><div id="default-menu" class="dropdown-menu" hidden><button id="save-default" type="button">保存并设为我的默认</button><button id="restore-default" type="button">应用我的默认</button><button id="restore-factory" type="button">应用出厂默认</button><button id="clear-default" type="button">删除我的默认快照</button></div></div><button id="save" class="button primary" type="button" disabled>保存修改</button></div>
+      </footer>
+    </main>
+  </div>
+  <div id="boot" class="boot" role="status"><span class="brand-icon" aria-hidden="true">喵</span><p>正在读取配置…</p></div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="./resident.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
