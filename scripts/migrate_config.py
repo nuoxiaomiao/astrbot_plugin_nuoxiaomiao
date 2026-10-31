@@ -6,11 +6,11 @@ from pathlib import Path
 
 
 try:
-    from config_support import CURRENT_CONFIG_NAME, LEGACY_CONFIG_NAME, migrate_config_dir
+    from config_support import migrate_config_dir
 except ModuleNotFoundError:
     # Support invoking this file directly from outside the plugin directory.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from config_support import CURRENT_CONFIG_NAME, LEGACY_CONFIG_NAME, migrate_config_dir
+    from config_support import migrate_config_dir
 
 
 def migrate_config(config_dir: Path, user_default_path: Path | None = None) -> str:

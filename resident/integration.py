@@ -288,17 +288,11 @@ class Integration:
                 }
             )
         for key, title, plugin in (
-            ("flow", "暂停与恢复", "astrbot_plugin_MiaoFlow"),
             ("context", "长对话压缩", "astrbot_plugin_AstrNa"),
             ("output", "拟人发送", "astrbot_plugin_outputpro"),
         ):
             found = stars.get(plugin)
             ready = found is not None
-            if key == "flow" and ready:
-                ready = all(
-                    callable(getattr(found.star_cls, name, None))
-                    for name in ("checkpoint", "get_session_state", "register_listener")
-                )
             result.append(
                 {
                     "id": key,

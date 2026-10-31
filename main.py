@@ -80,7 +80,10 @@ from astrbot.api.message_components import Image
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.message.message_event_result import MessageChain
-from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+from astrbot.core.utils.astrbot_path import (
+    get_astrbot_data_path,
+    get_astrbot_plugin_data_path,
+)
 
 if __package__:
     from .config_support import (
@@ -151,7 +154,7 @@ SELF_WAKE_OUTCOME_SKIPPED = "skipped"  # 没找到可用会话/静默时段，�
 SELF_WAKE_OUTCOME_ERROR = "error"      # 执行出错
 SELF_WAKE_RUN_RETENTION_DAYS = 7       # 自醒记录保留天数（与速览库一致）
 
-# 会话速览：记录放在插件 data 目录的 SQLite 里，重启不丢。
+# 会话速览：记录放在 AstrBot data/plugin_data 的 SQLite 里，重启不丢。
 ACTIVITY_DB_NAME = "activity.db"
 ACTIVITY_PRUNE_INTERVAL_SECONDS = 3600.0
 # 速览库写入的合并提交间隔：高频群不必每条消息一次 commit。
@@ -529,7 +532,7 @@ class NuoxiaomiaoPlugin(Star):
         self._localized_files_ts: dict[str, float] = {}
         self._localized_cleanup_lock = asyncio.Lock()
 
-        # 会话速览：记录写进 SQLite（默认在插件 data/activity.db），重启不丢。
+        # 会话速览：记录写进 SQLite（默认在 AstrBot data/plugin_data/activity.db），重启不丢。
         self._activity_db = None
         self._activity_db_open_path = ""
         self._activity_db_lock = threading.Lock()
@@ -916,10 +919,8 @@ class NuoxiaomiaoPlugin(Star):
         self.capability_context_digest = self._get_bool(
             "capability_context_digest", False
         )
-        # 「我的默认」快照位置：默认插件 data 目录；此键不进 schema，仅供测试隔离。
-        self.user_default_config_path = str(
-            self._runtime_config.get("user_default_config_path", "") or ""
-        ).strip()
+        # 「我的默认」快照位置：默认 AstrBot data/plugin_data；user_default_config_path
+        # 不进 schema、也不读配置，仅供测试直接注入属性，避免任意路径写入入口。
 
         # --- 长期记忆按需检索（与 livingmemory 协同；它不在就自动空转） ---
         self.lmem_gateway_enabled = self._get_bool("lmem_gateway_enabled", True)
@@ -969,12 +970,30 @@ class NuoxiaomiaoPlugin(Star):
             "保存配置并设为默认",
         )
 
+    def _plugin_data_dir(self) -> Path:
+        """持久化数据的默认目录：AstrBot data/plugin_data/astrbot_plugin_nuoxiaomiao/。
+
+        官方规范要求持久化数据存 data 目录而非插件自身目录，防止更新/重装插件
+        时数据被覆盖。各文件的具体位置仍可用 activity_db_path /
+        merge_localize_images_dir / user_default_config_path（仅测试注入）覆盖。
+        """
+        try:
+            base = Path(get_astrbot_plugin_data_path())
+        except Exception:  # noqa: BLE001
+            base = Path(get_astrbot_data_path()) / "plugin_data"
+        target = base / PLUGIN_NAME
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
+        return target
+
     def _user_default_config_path(self) -> Path:
-        """「我的默认」快照的位置：默认插件 data 目录，随插件一起备份。"""
+        """「我的默认」快照的位置：默认 AstrBot data/plugin_data，随 AstrBot 一起备份。"""
         override = str(getattr(self, "user_default_config_path", "") or "").strip()
         if override:
             return Path(override)
-        return Path(__file__).resolve().parent / "data" / "user_default_config.json"
+        return self._plugin_data_dir() / "user_default_config.json"
 
     def _load_user_default_config(self) -> dict[str, Any] | None:
         """读「我的默认」快照；没有或坏了就当不存在。"""
@@ -2967,7 +2986,7 @@ class NuoxiaomiaoPlugin(Star):
     # ------------------------------------------------------------------
 
     def _resolve_localize_images_dir(self) -> Path:
-        """本地化图片的持久目录；配置优先，留空则落到插件 data 目录。"""
+        """本地化图片的持久目录；配置优先，留空则落到 AstrBot data/plugin_data。"""
         configured = str(
             getattr(self, "_runtime_config", self.config).get("merge_localize_images_dir", "")
             or ""
@@ -2975,7 +2994,7 @@ class NuoxiaomiaoPlugin(Star):
         if configured:
             target = Path(configured).expanduser()
         else:
-            target = Path(__file__).resolve().parent / "data" / LOCALIZED_IMAGE_DIR_NAME
+            target = self._plugin_data_dir() / LOCALIZED_IMAGE_DIR_NAME
         try:
             target.mkdir(parents=True, exist_ok=True)
         except Exception as exc:  # noqa: BLE001
@@ -3603,13 +3622,15 @@ class NuoxiaomiaoPlugin(Star):
                 DISPLAY_NAME,
                 exc,
             )
-
-        roots.extend(
-            [
-                Path.cwd() / "data" / "plugin_data" / "meme_manager" / "memes",
-                Path("/root/data/plugin_data/meme_manager/memes"),
-            ]
-        )
+            try:
+                roots.append(
+                    Path(get_astrbot_data_path())
+                    / "plugin_data"
+                    / "meme_manager"
+                    / "memes"
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
         unique_roots: list[Path] = []
         seen: set[str] = set()
@@ -3685,13 +3706,6 @@ class NuoxiaomiaoPlugin(Star):
                 DISPLAY_NAME,
                 exc,
             )
-
-        paths.extend(
-            [
-                Path.cwd() / "data" / "config" / "meme_manager_config.json",
-                Path("/root/data/config/meme_manager_config.json"),
-            ]
-        )
 
         unique_paths: list[Path] = []
         seen: set[str] = set()
@@ -3907,11 +3921,11 @@ class NuoxiaomiaoPlugin(Star):
             return ""
 
     def _activity_db_file(self) -> Path:
-        """速览库的位置：默认插件 data/activity.db，可用配置覆盖。"""
+        """速览库的位置：默认 AstrBot data/plugin_data 下的 activity.db，可用配置覆盖。"""
         override = str(getattr(self, "activity_db_path", "") or "").strip()
         if override:
             return Path(override)
-        return Path(__file__).resolve().parent / "data" / ACTIVITY_DB_NAME
+        return self._plugin_data_dir() / ACTIVITY_DB_NAME
 
     def _get_activity_db(self) -> sqlite3.Connection:
         """惰性打开速览库连接；路径变了就换到新库。失败抛错，由调用方吞掉。

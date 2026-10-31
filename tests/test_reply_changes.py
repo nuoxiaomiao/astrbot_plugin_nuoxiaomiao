@@ -9,7 +9,7 @@ from astrbot.core.message.message_event_result import MessageChain, MessageEvent
 from astrbot.core.provider.entities import ProviderRequest
 
 from main import SEND_OBSERVER_EXTRA, SYNTHETIC_EVENT_EXTRA
-from test_plugin_logic import FakeContext, FakeEvent, make_plugin, fetch_activity_rows
+from test_plugin_logic import FakeEvent, make_plugin, fetch_activity_rows
 
 
 def llm_result(text):

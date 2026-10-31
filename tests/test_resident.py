@@ -1,4 +1,3 @@
-import asyncio
 import json
 import sqlite3
 import tempfile
@@ -333,27 +332,6 @@ class ResidentTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             p.resident.store.budget(datetime.now().strftime("%Y-%m-%d"))["used"], 1
         )
-
-    async def test_miaoflow_pause_and_stop_gate(self):
-        p = self.make()
-        state = {"mode": "paused"}
-        control = SimpleNamespace(
-            get_session_state=lambda umo: state,
-            checkpoint=AsyncMock(),
-            register_listener=lambda callback: lambda: None,
-        )
-        p.context.get_all_stars = lambda: [
-            SimpleNamespace(
-                name="astrbot_plugin_MiaoFlow", activated=True, star_cls=control
-            )
-        ]
-        task = asyncio.create_task(p.resident.autonomy.checkpoint(FakeEvent(), "test"))
-        await asyncio.sleep(0.02)
-        self.assertFalse(task.done())
-        state["mode"] = "stopped"
-        with self.assertRaises(asyncio.CancelledError):
-            await task
-        control.checkpoint.assert_not_called()
 
     async def test_recover_never_replays_unknown_tools(self):
         p = self.make()

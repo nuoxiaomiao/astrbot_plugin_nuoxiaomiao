@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import json
 import itertools
 import os
@@ -11,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from astrbot.core.message.components import At, Image, Json, Plain, Reply
+from astrbot.core.message.components import At, Image, Plain, Reply
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import ProviderRequest
 
@@ -26,11 +25,8 @@ from main import (
     SELF_WAKE_EVENT_EXTRA,
     _split_reply_text,
 )
-from scripts.migrate_config import (
-    CURRENT_CONFIG_NAME,
-    LEGACY_CONFIG_NAME,
-    migrate_config,
-)
+from config_support import CURRENT_CONFIG_NAME, LEGACY_CONFIG_NAME
+from scripts.migrate_config import migrate_config
 
 
 class FakeEvent:
@@ -3752,12 +3748,16 @@ class SelfWakeIdentityTest(unittest.IsolatedAsyncioTestCase):
 
 
 def make_user_default_plugin(**cfg):
-    """「我的默认」测试实例：给每个用例独立的快照文件。"""
-    cfg.setdefault(
-        "user_default_config_path",
-        str(Path(tempfile.mkdtemp(prefix="nxm_udefault_")) / "user_default_config.json"),
+    """「我的默认」测试实例：给每个用例独立的快照文件。
+
+    user_default_config_path 仅测试注入属性（运行时不再读配置键），
+    避免任意路径写入入口。
+    """
+    plugin = make_plugin(**cfg)
+    plugin.user_default_config_path = str(
+        Path(tempfile.mkdtemp(prefix="nxm_udefault_")) / "user_default_config.json"
     )
-    return make_plugin(**cfg)
+    return plugin
 
 
 class UserDefaultConfigTest(unittest.IsolatedAsyncioTestCase):
@@ -4658,7 +4658,7 @@ class EventSpanCloseTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_trace_is_silent(self):
         # 没有 trace 属性的事件（旧版核心/测试桩）不能因此报错。
-        plugin = NuoxiaomiaoPlugin.__new__(NuoxiaomiaoPlugin)
+        NuoxiaomiaoPlugin.__new__(NuoxiaomiaoPlugin)
         NuoxiaomiaoPlugin._close_event_span(FakeEvent(message_str="x"), "说明")
         self.assertTrue(True)
 

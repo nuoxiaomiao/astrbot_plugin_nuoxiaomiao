@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from .integration import active_stars, is_dispatcher
+from .integration import is_dispatcher
 
 CURRENT_RUN = contextvars.ContextVar("nuoxiaomiao_resident_run", default=None)
 
@@ -152,32 +152,7 @@ class Autonomy:
     def __init__(self, service):
         self.service = service
         self.runs = {}
-        self.unsubscribe = None
-        self.miaoflow = None
         self.delivery_locks = {}
-
-    def bind(self):
-        found = next(
-            (
-                s.star_cls
-                for s in active_stars(self.service.plugin.context)
-                if s.name == "astrbot_plugin_MiaoFlow"
-            ),
-            None,
-        )
-        if found is not None and not all(
-            callable(getattr(found, key, None))
-            for key in ("get_session_state", "checkpoint", "register_listener")
-        ):
-            found = None
-        if found is self.miaoflow:
-            return
-        if self.unsubscribe:
-            self.unsubscribe()
-        self.miaoflow = found
-        self.unsubscribe = None
-        if found and callable(getattr(found, "register_listener", None)):
-            self.unsubscribe = found.register_listener(self.on_control)
 
     def cancel_pending(self, run_id=None, umo=None):
         rows = self.service.store.rows(
@@ -192,22 +167,6 @@ class Autonomy:
             p._proactive_pending.pop(row["id"], None)
             p._update_proactive_row(row["id"], status="skipped", done_ts=time.time())
         return bool(rows)
-
-    async def on_control(self, umo, action, state):
-        if action == "stop":
-            self.cancel_pending(umo=umo)
-        for run in list(self.runs.values()):
-            if run.event.unified_msg_origin != umo:
-                continue
-            if action == "stop":
-                run.status = "stopped"
-                run.gate.set()
-            elif action == "pause":
-                run.status = "paused"
-                run.gate.clear()
-            elif action == "resume":
-                run.status = "running"
-                run.gate.set()
 
     async def control(self, run_id, action):
         run = self.runs.get(run_id)
@@ -233,7 +192,6 @@ class Autonomy:
             )
 
     async def checkpoint(self, event, phase):
-        self.bind()
         p = self.service.plugin
         run = CURRENT_RUN.get()
         while True:
@@ -246,21 +204,10 @@ class Autonomy:
                 )
             ):
                 raise asyncio.CancelledError()
-            state = (
-                self.miaoflow.get_session_state(event.unified_msg_origin)
-                if self.miaoflow
-                else {}
-            )
-            if state.get("mode") == "stopped":
-                raise asyncio.CancelledError()
-            if state.get("mode") != "paused" and (
-                run is None or run.status != "paused"
-            ):
+            if run is None or run.status != "paused":
                 break
-            # Poll also handles plugin reloads or control events received before bind.
+            # Poll also handles plugin reloads or control events received before run.
             await asyncio.sleep(0.2)
-        if self.miaoflow:
-            await self.miaoflow.checkpoint(event, phase)
 
     def restrict_run(self, run):
         integration = self.service.integration
@@ -353,10 +300,6 @@ class Autonomy:
                 tasks.append(run.task)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        if self.unsubscribe:
-            self.unsubscribe()
-        self.unsubscribe = None
-        self.miaoflow = None
 
     async def deliver_pending(self, row, callback):
         store = self.service.store

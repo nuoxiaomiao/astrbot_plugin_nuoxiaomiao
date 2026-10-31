@@ -18,14 +18,21 @@ from resident.autonomy import CURRENT_RUN, BudgetProvider
 from resident_fixtures import ScriptedProvider, build_runner, conversation
 from test_plugin_logic import make_plugin, FakeContext, FakeEvent
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from astrbot_plugin_astrhe.astrhe.tools.base import AstrHeFunctionTool
-from astrbot_plugin_astrhe.astrhe.tools.reader_tools import ReaderTools
-from astrbot_plugin_astrhe.astrhe.injector import Injector
-from astrbot_plugin_MiaoFlow.miaoflow.controller import Controller
-from astrbot_plugin_MiaoFlow.miaoflow.state import StateStore
+# 外部插件集成测试：对应插件未安装时整个模块跳过，不阻断默认测试发现。
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from astrbot_plugin_astrhe.astrhe.tools.base import AstrHeFunctionTool
+    from astrbot_plugin_astrhe.astrhe.tools.reader_tools import ReaderTools
+    from astrbot_plugin_astrhe.astrhe.injector import Injector
+
+    _EXTERNAL_IMPORTS_OK = True
+except ImportError:
+    _EXTERNAL_IMPORTS_OK = False
 
 
+@unittest.skipUnless(
+    _EXTERNAL_IMPORTS_OK, "需要已安装的 astrbot_plugin_astrhe 才能运行集成测试"
+)
 class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
     def make(self, **config):
         p = make_plugin(
@@ -245,35 +252,6 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
             send.fn.assert_not_called()
             self.assertEqual(p.context.sent, [])
 
-    async def test_real_miaoflow_listener_and_checkpoint(self):
-        p = self.make()
-        controller = Controller(StateStore(None))
-        self.addAsyncCleanup(controller.close)
-        flow = SimpleNamespace(
-            get_session_state=lambda umo: controller.session(umo).public(),
-            register_listener=lambda callback: (
-                controller.listeners.append(callback)
-                or (lambda: controller.listeners.remove(callback))
-            ),
-            checkpoint=AsyncMock(),
-        )
-        p.context.get_all_stars = lambda: [
-            SimpleNamespace(
-                name="astrbot_plugin_MiaoFlow", activated=True, star_cls=flow
-            )
-        ]
-        p.resident.autonomy.bind()
-        event = FakeEvent()
-        await controller.control(event.unified_msg_origin, "pause")
-        pending = asyncio.create_task(p.resident.autonomy.checkpoint(event, "test"))
-        await asyncio.sleep(0.03)
-        self.assertFalse(pending.done())
-        await controller.control(event.unified_msg_origin, "resume")
-        await asyncio.wait_for(pending, 2)
-        await controller.control(event.unified_msg_origin, "stop")
-        with self.assertRaises(asyncio.CancelledError):
-            await p.resident.autonomy.checkpoint(event, "test")
-
     async def test_uncharged_run_recovers_once_without_replaying_unknown_action(self):
         p = self.make()
         store = p.resident.store
@@ -375,8 +353,11 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
             StarHandlerRegistry,
             EventType,
         )
-        from astrbot_plugin_livingmemory.main import LivingMemoryPlugin
-        from astrbot_plugin_AstrNa.main import AstrNa
+        try:
+            from astrbot_plugin_livingmemory.main import LivingMemoryPlugin
+            from astrbot_plugin_AstrNa.main import AstrNa
+        except ImportError:
+            self.skipTest("需要已安装的 livingmemory / AstrNa 插件")
 
         p = self.make()
         called = []
@@ -409,7 +390,9 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
             ("astrna", astrna_hook, 1000),
             ("nuoxiaomiao", p.on_llm_request, 100),
         ]:
-            owners[name] = SimpleNamespace(name=name, activated=True, reserved=False)
+            owners[name] = SimpleNamespace(
+                name=name, display_name=name, activated=True, reserved=False
+            )
             registry.append(
                 StarHandlerMetadata(
                     event_type=EventType.OnLLMRequestEvent,

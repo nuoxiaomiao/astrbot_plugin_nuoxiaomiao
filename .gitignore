@@ -1,6 +1,11 @@
 __pycache__/
 *.py[cod]
+.pytest_cache/
 .ruff_cache/
+.venv/
+build/
+dist/
+*.egg-info
 
 # 运行时数据：聊天速览 SQLite、转存图片等（防止更新/重装插件时数据被覆盖）
 data/

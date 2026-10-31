@@ -141,13 +141,20 @@ class ConfigCompatibilityTest(unittest.TestCase):
             self.assertTrue(config_diagnostics({"debounce_slow_idle_seconds": bad}, SCHEMA))
 
     def test_invalid_native_image_directory_uses_the_runtime_default(self):
+        from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
+
         plugin = object.__new__(NuoxiaomiaoPlugin)
         plugin.config = {"merge_localize_images_dir": {"unexpected": "directory"}}
         plugin._runtime_config, errors = normalize_config(plugin.config, SCHEMA, runtime=True)
         self.assertIn("merge_localize_images_dir", errors)
+        expected = (
+            Path(get_astrbot_plugin_data_path())
+            / "astrbot_plugin_nuoxiaomiao"
+            / "merged_images"
+        )
         with patch.object(Path, "mkdir"):
             target = plugin._resolve_localize_images_dir()
-        self.assertEqual(target, Path(__file__).resolve().parents[1] / "data" / "merged_images")
+        self.assertEqual(target, expected)
 
 
 class ConfigApiTest(unittest.IsolatedAsyncioTestCase):

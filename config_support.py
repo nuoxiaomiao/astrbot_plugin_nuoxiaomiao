@@ -263,7 +263,22 @@ def preload_config_migration(module_name: str, plugin_dir: Path, config_dir: Pat
     if module_name != "data.plugins.astrbot_plugin_nuoxiaomiao.main":
         return None
     current = Path(config_dir) / CURRENT_CONFIG_NAME
-    user_default = Path(plugin_dir) / "data" / "user_default_config.json"
+    # 旧版本把「我的默认」快照放在插件自身 data/ 目录；新版本默认落到
+    # AstrBot data/plugin_data。升级时把旧快照搬到新位置，避免更新被覆盖。
+    try:
+        from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
+
+        plugin_data = Path(get_astrbot_plugin_data_path()) / "astrbot_plugin_nuoxiaomiao"
+    except Exception:  # noqa: BLE001
+        plugin_data = Path(plugin_dir) / "data"
+    user_default = plugin_data / "user_default_config.json"
+    legacy_snapshot = Path(plugin_dir) / "data" / "user_default_config.json"
+    if legacy_snapshot.is_file() and not user_default.is_file():
+        try:
+            plugin_data.mkdir(parents=True, exist_ok=True)
+            atomic_write_bytes(user_default, legacy_snapshot.read_bytes())
+        except Exception:  # noqa: BLE001
+            pass
     source = current if current.is_file() else Path(config_dir) / LEGACY_CONFIG_NAME
     if source.is_file():
         config = json.loads(source.read_text(encoding="utf-8-sig"))

@@ -28,7 +28,6 @@ class ResidentServices:
     async def initialize(self):
         self.store.recover()
         self.integration.migrate_selection()
-        self.autonomy.bind()
 
     def register(self):
         base = "/astrbot_plugin_nuoxiaomiao/resident"

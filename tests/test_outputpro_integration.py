@@ -19,9 +19,15 @@ from test_plugin_logic import FakeContext, FakeEvent, fetch_activity_rows, make_
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PLUGIN_ROOT.parent))
-from astrbot_plugin_outputpro.main import OutputPlugin
-from astrbot_plugin_outputpro.core.model import StateManager
+# 外部插件集成测试：OutputPro 未安装时整个模块跳过，不阻断默认测试发现。
+try:
+    sys.path.insert(0, str(PLUGIN_ROOT.parent))
+    from astrbot_plugin_outputpro.main import OutputPlugin
+    from astrbot_plugin_outputpro.core.model import StateManager
+
+    _EXTERNAL_IMPORTS_OK = True
+except ImportError:
+    _EXTERNAL_IMPORTS_OK = False
 
 
 class OutputEvent(FakeEvent):
@@ -42,6 +48,9 @@ def output_defaults():
     return parse(schema)
 
 
+@unittest.skipUnless(
+    _EXTERNAL_IMPORTS_OK, "需要已安装的 astrbot_plugin_outputpro 才能运行集成测试"
+)
 class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="nxm-output-integration-")

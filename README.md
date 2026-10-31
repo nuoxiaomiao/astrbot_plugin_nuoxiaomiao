@@ -76,7 +76,7 @@ AstrBot 消息合并、回复节奏、对话守卫、会话信箱和自主活动
 
 自醒基础工具为聊天记录、LivingMemory 记忆读取、AstrHe 读计划和更新待办、当前状态与风格提案、受控发信。其它工具通过 `resident_extra_tools` 逐项保存具体工具名，新安装的工具不会自动加入。基础工具仍受宿主、人设、会话、依赖插件及功能开关限制；最终请求与实际执行再次取交集。没有公开权限传递接口的嵌套分发、子代理和后台工具在自醒中不可用，页面会说明原因。普通聊天继续由宿主管理。
 
-自醒沿用 AstrBot 主 Agent 和会话配置，在 Runner 初始化之前执行宿主的请求钩子，保留 AstrHe 的待办注入、计划读取与保密过滤，以及 LivingMemory、AstrNa 的原有请求处理。没有事情可以安静结束，不会在糯小喵另建每日规划、日记或长期记忆库。MiaoFlow 启用且提供公开接口时，使用其状态查询、监听及检查点；暂停等待执行边界，停止阻断之后的请求、工具和发送。
+自醒沿用 AstrBot 主 Agent 和会话配置，在 Runner 初始化之前执行宿主的请求钩子，保留 AstrHe 的待办注入、计划读取与保密过滤，以及 LivingMemory、AstrNa 的原有请求处理。没有事情可以安静结束，不会在糯小喵另建每日规划、日记或长期记忆库。暂停等待执行边界，停止阻断之后的请求、工具和发送。
 
 ## 会话信箱
 
@@ -104,7 +104,7 @@ AstrBot 消息合并、回复节奏、对话守卫、会话信箱和自主活动
 - **应用我的默认 / 应用出厂默认**：填入草稿，保存后生效。
 - **删除我的默认快照**：只删除快照，不改变当前配置和草稿。
 
-插件目录名保持 `astrbot_plugin_nuoxiaomiao`；注册名保持 `astrbot_plugin_nuoxiaomiao`，必须与会话的 `plugin_set` 一致。配置文件是 AstrBot 的 `data/config/astrbot_plugin_nuoxiaomiao_config.json`，聊天速览默认位于插件 `data/activity.db`。
+插件目录名保持 `astrbot_plugin_nuoxiaomiao`；注册名保持 `astrbot_plugin_nuoxiaomiao`，必须与会话的 `plugin_set` 一致。配置文件是 AstrBot 的 `data/config/astrbot_plugin_nuoxiaomiao_config.json`；聊天速览、本地化图片与「我的默认」快照默认位于 AstrBot 的 `data/plugin_data/astrbot_plugin_nuoxiaomiao/`（更新/重装插件不覆盖）。
 
 加载时会在 AstrBot 补默认值之前处理旧配置文件名和两个别名：`merge_enabled` → `debounce_enabled`、`poke_reply_debounce_seconds` → `poke_reply_cooldown_seconds`。已有新键优先。别名迁移保留 `.bak-alias-<摘要>` 原始文件备份，原子写入，可重复执行；个人默认快照也兼容迁移。
 
@@ -114,6 +114,6 @@ AstrBot 消息合并、回复节奏、对话守卫、会话信箱和自主活动
 
 ## 验证
 
-使用 AstrBot 的 Python 环境运行 `python -m unittest discover -s tests -p 'test_*.py'`；前端运行 `node --test tests/test_config_ui.js`。测试使用临时数据库、AstrBot 4.29.1 的真实 ToolLoopAgentRunner/FunctionToolExecutor、模拟模型和平台发送；包含安装的 AstrHe 读计划与权限注入、MiaoFlow 控制器、LivingMemory/AstrNa 公共钩子桥接，以及 OutputPro 原有发送集成回归。不会发送真实消息或改动其它插件数据。
+使用 AstrBot 的 Python 环境运行 `python -m unittest discover -s tests -p 'test_*.py'`；前端运行 `node --test tests/test_config_ui.js`。测试使用临时数据库、AstrBot 4.29.1 的真实 ToolLoopAgentRunner/FunctionToolExecutor、模拟模型和平台发送；包含安装的 AstrHe 读计划与权限注入、LivingMemory/AstrNa 公共钩子桥接，以及 OutputPro 原有发送集成回归。外部插件集成测试在对应插件未安装时自动跳过（`skipTest`），核心测试不依赖它们。不会发送真实消息或改动其它插件数据。
 
 IRMIA 参考来源、许可与移植边界见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
