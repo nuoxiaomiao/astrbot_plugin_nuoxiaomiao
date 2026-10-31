@@ -24,22 +24,112 @@
     debounce_enabled: '启用消息合并',
     debounce_group_enabled: '合并群聊中的连续消息',
     debounce_private_enabled: '合并私聊中的连续消息',
-    debounce_dynamic_enabled: '按消息内容决定等待时间',
+    debounce_dynamic_enabled: '按消息长短决定等多久',
     debounce_typing_enabled: '对方还在输入时继续等待',
+    debounce_fast_idle_seconds: '一句话说完后等多久（秒）',
+    debounce_slow_idle_seconds: '话没说完时等多久（秒）',
+    debounce_wake_idle_seconds: '只叫了名字时多等多久（秒）',
+    debounce_typing_hold_seconds: '收到「正在输入」后多等多久（秒）',
+    debounce_long_chars: '多少字就算一句话说完',
+    debounce_end_punctuation: '哪些标点算一句话说完',
+    debounce_max_parts: '一批最多合并几句',
+    merge_idle_seconds: '固定等待时长（秒）',
+    merge_max_total_seconds: '一批消息最长等多久（秒）',
+    merge_join_separator: '合并时多句话之间用什么隔开',
+    merge_localize_images: '图片先存到本地再合并',
+    merge_localize_images_dir: '合并图片的保存目录',
     human_reply_enabled: '启用分条回复',
-    activity_tool_enabled: '允许模型查询聊天记录',
-    lmem_gateway_enabled: '启用长期记忆检索',
+    human_reply_chars_per_minute: '打字速度（字/分钟）',
+    human_reply_interrupt_enabled: '用户插话时中止未开口的回复',
+    human_reply_show_input_status: '打字时显示「正在输入」',
     human_reply_max_length: '超过多少字时不分条发送',
     human_reply_max_wait_seconds: '每条回复最多等多久（秒）',
     trigger_rounds: '连续对话几轮后拦截',
     window_seconds: '多久没新触发就重新计数（秒）',
+    include_group: '群聊刷屏拦截',
+    include_private: '私聊刷屏拦截',
+    poke_reply_enabled: '被戳时回应',
+    poke_reply_prompt: '被戳时的回应提示词',
+    poke_reply_cooldown_seconds: '群聊被戳后冷却（秒）',
+    blocked_users: '完全屏蔽这些用户',
     user_whitelist: '这些用户免于刷屏拦截',
     user_blacklist: '只检测这些用户（留空检测所有人）',
+    meme_tags: '刷屏时回的表情分类',
+    meme_cooldown_seconds: '两次表情间隔（秒）',
+    keyword_wake_enabled: '关键词唤醒',
+    keyword_wake_list: '哪些词会唤醒机器人',
+    activity_buffer_enabled: '记录聊天消息',
+    activity_record_private: '也记录私聊消息',
+    activity_record_bot_replies: '也记录机器人自己的回复',
+    activity_buffer_max_text_chars: '单条记录最多记多少字',
+    activity_retention_days: '聊天记录保留几天',
+    activity_require_admin: '仅主人/管理员能翻记录',
+    activity_tool_enabled: '允许模型查询聊天记录',
+    activity_hint_enabled: '提醒机器人可以翻记录',
+    activity_prefetch_enabled: '提到别处聊天时自动带近况',
+    activity_prefetch_keywords: '哪些话会触发自动带近况',
+    capability_context_digest: '每轮回复都附带其他群近况',
+    lmem_gateway_enabled: '启用长期记忆检索',
+    lmem_gateway_keywords: '哪些话会触发翻长期记忆',
+    lmem_gateway_top_k: '一次最多取几条记忆',
+    lmem_gateway_timeout_seconds: '记忆检索超时（秒）',
+    lmem_gateway_max_chars: '记忆最多带多少字',
+    lmem_gateway_plugin_name: '记忆插件名（一般不用改）',
+    lmem_gateway_recall_tool_name: '记忆检索工具名（一般不用改）',
+    proactive_enabled: '允许机器人主动发消息',
+    proactive_hint_enabled: '提醒机器人可以主动找人',
+    proactive_allow_groups: '允许发主动消息的群',
+    proactive_target_whitelist: '允许被主动私聊的人',
+    proactive_max_pending_per_person: '同一目标最多排几条待发',
+    proactive_daily_limit_per_person: '同一目标每天最多发几次',
+    proactive_cooldown_minutes: '两次主动消息间隔（分钟）',
+    proactive_context_other_sessions: '发消息前参考其他群近况',
+    proactive_context_other_private: '参考时是否包含私聊',
+    proactive_quiet_hours_start: '静默时段开始',
+    proactive_quiet_hours_end: '静默时段结束',
+    proactive_silent_wake_enabled: '启用静默自醒',
+    proactive_judge_provider_id: '自醒用的模型',
+    proactive_silent_wake_target_mean_minutes: '平均多久醒来（分钟）',
     proactive_silent_wake_floor_minutes: '最早多久醒来（分钟）',
     proactive_silent_wake_ceil_minutes: '最晚多久醒来（分钟）',
-    proactive_silent_wake_target_mean_minutes: '平均多久醒来（分钟）',
+    proactive_silent_wake_daily_budget: '每天最多自醒几次',
     proactive_silent_wake_max_steps: '每次自醒最多执行几步',
-    resident_extra_tools: '自醒可以使用的额外工具'
+    proactive_silent_wake_allow_tools: '自醒时允许调用工具',
+    resident_run_token_limit: '单轮 token 上限（0=不限）',
+    resident_daily_token_limit: '每日 token 上限（0=不限）',
+    resident_extra_tools: '自醒可以使用的额外工具',
+    tool_call_prompt_enabled: '启用自定义工具提示词',
+    tool_call_prompt: '工具调用提示词内容',
+    capability_hint_text: '能力提示文案（留空用内置）',
+    force_wake_prefix: '合成消息唤醒前缀（一般留空）',
+    activity_db_path: '聊天记录库位置',
+    shared_memory_enabled: '启用全局主脑共享记忆',
+    master_umo: '主脑会话编号',
+    master_auto_bind: '首次管理员私聊自动绑定主脑',
+    unread_inbox_enabled: '启用未读信箱分流',
+    inbox_group_whitelist: '启用信箱的群（白名单）',
+    inbox_group_blacklist: '不启用信箱的群（黑名单）',
+    mention_notice_enabled: '启用点名通知卡',
+    mention_notice_limit: '通知卡最多带几条未读',
+    topic_summary_enabled: '启用话题概括',
+    topic_light_provider_id: '话题概括用的模型',
+    topic_min_unread: '至少几条未读才概括',
+    topic_cooldown_seconds: '两次概括间隔（秒）',
+    topic_max_chars: '话题一句话最多多少字',
+    topic_line_max_chars: '喂给模型的消息截断字数',
+    topic_timeout_seconds: '概括超时（秒）',
+    topic_segment_msg_count: '攒几条未读算一段',
+    topic_segment_backfill_max: '概括时补几段旧消息',
+    vision_enabled: '启用群聊识图',
+    vision_provider_ids: '识图用哪些模型（按顺序回退）',
+    image_keep_days: '图片保留几天',
+    vision_image_max: '一条消息最多留底几张',
+    vision_brief_max_chars: '自动描述最长字数',
+    vision_read_max_chars: '回答关于图的问题最长字数',
+    vision_timeout_seconds: '识图超时（秒）',
+    vision_cache_ttl_days: '描述缓存保留天数',
+    resident_inbox_enabled: '启用未读信箱（未读概况）',
+    resident_state_enabled: '启用自主状态/心情/风格'
   };
 
   /* ============================ utils ============================ */
@@ -241,69 +331,69 @@
   function configKeys(key) { return key === '@reference' ? REFERENCE_KEYS : [key]; }
   var GROUPS = [
     { id: 'overview', title: '总览', note: '查看各功能的设置、运行检查和插件总开关。', sections: [feature('global', '插件总开关', '', ['enabled'])] },
-    { id: 'debounce', title: '消息合并', note: '把连续发送的几条消息合起来，再统一回复。', sections: [
-      feature('merge', '合并连续消息', '群聊只合并已经唤醒机器人的消息，指令直接放行。', ['debounce_enabled'], [
-        section('scenes', '在哪些聊天里启用', '', ['debounce_group_enabled', 'debounce_private_enabled']),
-        section('waiting', '等多久再回复', '按内容等待时，完整句、短句和只叫名字分别计时。', ['debounce_dynamic_enabled', 'debounce_fast_idle_seconds', 'debounce_slow_idle_seconds', 'debounce_wake_idle_seconds', 'merge_idle_seconds']),
-        section('typing', '对方还在输入时', '只有支持输入状态通知的私聊平台才生效。', ['debounce_typing_enabled', 'debounce_typing_hold_seconds']),
+    { id: 'debounce', title: '消息合并', note: '把同一人连着发的好几条消息拼成一条再回复，避免来回打断、省 token。适合群里爱连发短句的人。', sections: [
+      feature('merge', '合并连续消息', '只合并「叫了机器人」的消息：比如连着发「小喵」「在吗」会拼成一条再回；发指令（/开头）不合并、立即执行。', ['debounce_enabled'], [
+        section('scenes', '在哪些聊天里启用', '群聊和私聊可以分开开关。', ['debounce_group_enabled', 'debounce_private_enabled']),
+        section('waiting', '等多久再回复', '话已经说完的等短一点；话还没说完（短句）多等一会；只叫了名字（没说事）再等等，方便你接下一句。', ['debounce_dynamic_enabled', 'debounce_fast_idle_seconds', 'debounce_slow_idle_seconds', 'debounce_wake_idle_seconds', 'merge_idle_seconds']),
+        section('typing', '对方还在输入时', '对方显示「正在输入」就继续等，把没打完的话一起收进来。仅私聊平台支持。', ['debounce_typing_enabled', 'debounce_typing_hold_seconds']),
         section('advanced', '高级设置', '限制范围、判断规则和合并细节。', [], true, [
           section('scope', '只对哪些人和群生效', '名单留空表示不限制；群排除名单优先。', ['debounce_user_whitelist', 'debounce_group_whitelist', 'debounce_group_blacklist']),
-          section('rules', '怎样判断已经说完', '', ['debounce_long_chars', 'debounce_end_punctuation', 'force_wake_prefix']),
-          section('limits', '合并数量与最长等待', '最长等待从本批第一条消息开始计算。', ['debounce_max_parts', 'merge_max_total_seconds', 'merge_join_separator']),
-          section('images', '合并图片', '目录留空使用插件默认位置。', ['merge_localize_images', 'merge_localize_images_dir'])
+          section('rules', '怎样判断「话已说完」', '达到字数、以句号叹号等标点结尾，就算一句说完了。', ['debounce_long_chars', 'debounce_end_punctuation', 'force_wake_prefix']),
+          section('limits', '合并数量与最长等待', '攒到上限或等满时间就立刻回复，避免拖太久。', ['debounce_max_parts', 'merge_max_total_seconds', 'merge_join_separator']),
+          section('images', '合并图片', '合并含图片的消息时先存到本地，防止等待期间图裂。', ['merge_localize_images', 'merge_localize_images_dir'])
         ])
       ], ['debounce_enabled'])
     ] },
-    { id: 'human_reply', title: '回复节奏', note: '让回复按打字速度逐条发送。', sections: [
-      feature('reply', '按打字速度分条回复', '仅处理非流式纯文本；OutputPro 先清洗和处理引用，再按这里的节奏发送。', ['human_reply_enabled'], [
-        section('speed', '打字速度', '', ['human_reply_chars_per_minute']),
-        section('interrupt', '用户插话时', '已经发出第一条回复后，本轮会说完，新消息排到下一轮。', ['human_reply_interrupt_enabled']),
-        section('typing', '向对方显示输入状态', '', ['human_reply_show_input_status']),
+    { id: 'human_reply', title: '回复节奏', note: '让机器人像真人打字一样，一条一条慢慢发，而不是一次甩一大段。纯文字回复才生效。', sections: [
+      feature('reply', '按打字速度分条回复', '只对纯文字回复生效；图片、转发、流式回复不受影响。想关掉就直接关上面的开关。', ['human_reply_enabled'], [
+        section('speed', '打字速度', '默认 240 字/分钟；想更像真人慢速输入可以调到 60～90。', ['human_reply_chars_per_minute']),
+        section('interrupt', '用户插话时', '第一条还没发出前插话 → 打断重来；已经发出第一条 → 这轮说完，新消息排到下一轮。', ['human_reply_interrupt_enabled']),
+        section('typing', '向对方显示输入状态', '打字期间让对方看到「正在输入…」。仅私聊平台支持，失败不影响回复。', ['human_reply_show_input_status']),
         section('advanced', '高级设置', '发送限制和生效群范围。', [], true, [
-          section('limits', '长度与等待限制', '', ['human_reply_max_length', 'human_reply_max_wait_seconds']),
-          section('scope', '在哪些群生效', '群名单同时限制插话打断和分条发送，私聊不受群名单影响。', ['human_reply_group_whitelist', 'human_reply_group_blacklist'])
+          section('limits', '长度与等待限制', '太长的回复不分条（直接一次发），每条气泡也有最长等待。', ['human_reply_max_length', 'human_reply_max_wait_seconds']),
+          section('scope', '在哪些群生效', '名单留空表示所有群；排除名单优先。私聊不受群名单影响。', ['human_reply_group_whitelist', 'human_reply_group_blacklist'])
         ])
       ], ['human_reply_enabled'])
     ] },
-    { id: 'interaction', title: '拦截与互动', note: '刷屏拦截、屏蔽用户、被戳回应和关键词唤醒分别设置，互不代替。', sections: [
-      feature('guard', '刷屏拦截', '统计与机器人对话的批次；合并后的几条消息算一轮。', ['include_group', 'include_private'], [
-        section('rules', '什么时候拦截', '', ['trigger_rounds', 'window_seconds']),
+    { id: 'interaction', title: '拦截与互动', note: '管三件事，互不干扰：① 连续刷屏会被拦下；② 名单里的人被完全屏蔽；③ 被戳、被提关键词时机器人会回应。', sections: [
+      feature('guard', '刷屏拦截', '防同一个人连续刷屏：短时间连着触发 N 轮就拦下这条，并（可选）回个表情。只统计「对机器人说话」，普通聊天不影响。', ['include_group', 'include_private'], [
+        section('rules', '什么时候拦截', '连续对话几轮 + 窗口内没新动静就重新计数。', ['trigger_rounds', 'window_seconds']),
         section('advanced', '高级设置', '检测名单、生效群和表情回应。', [], true, [
-          section('users', '检测哪些用户', '仅检测名单留空时检测所有非免检用户；免检名单优先。', ['user_whitelist', 'user_blacklist']),
-          section('scope', '在哪些群拦截', '', ['guard_group_whitelist', 'guard_group_blacklist']),
-          section('response', '拦截后发送的表情', '需要安装 meme_manager。', ['meme_tags', 'meme_cooldown_seconds'])
+          section('users', '检测哪些用户', '默认检测所有人；也可以只检测名单里的用户，或让某些人豁免。', ['user_whitelist', 'user_blacklist']),
+          section('scope', '在哪些群拦截', '名单留空表示所有群；排除名单优先。', ['guard_group_whitelist', 'guard_group_blacklist']),
+          section('response', '拦截后发送的表情', '需要安装 meme_manager 插件。', ['meme_tags', 'meme_cooldown_seconds'])
         ])
       ], ['include_group', 'include_private']),
-      feature('blocked', '屏蔽用户', '名单里的用户发来指令或聊天都不处理；优先于刷屏免检名单。', ['blocked_users']),
-      feature('poke', '被戳回应', '被戳时让模型回一句，群聊有冷却，私聊没有冷却。', ['poke_reply_enabled'], [
+      feature('blocked', '屏蔽用户', '名单里的人发什么（包括指令）都不处理。优先级最高，被屏蔽的人不参与刷屏检测。', ['blocked_users']),
+      feature('poke', '被戳回应', '有人戳机器人时，让它自然回一句（比如「别戳啦，喵！」）。群聊里隔一段时间才回应一次，私聊不限。', ['poke_reply_enabled'], [
         section('cooldown', '多久可以再回应', '', ['poke_reply_cooldown_seconds']),
         section('advanced', '高级设置', '回应提示词和生效群范围。', [], true, [
-          section('prompt', '让模型怎么回应', '', ['poke_reply_prompt']),
+          section('prompt', '让模型怎么回应', '{username} 会自动替换成戳你的人的名字。', ['poke_reply_prompt']),
           section('scope', '在哪些群回应', '', ['poke_group_whitelist', 'poke_group_blacklist'])
         ])
       ], ['poke_reply_enabled']),
-      feature('keyword', '关键词唤醒', '群消息没有 @ 机器人时，提到关键词也能唤醒。', ['keyword_wake_enabled'], [
-        section('words', '哪些词会唤醒', '', ['keyword_wake_list']),
+      feature('keyword', '关键词唤醒', '群里没人 @ 机器人时，只要提到你设的词（比如「小喵」），机器人也会回应。适合不想打 @ 的场景。', ['keyword_wake_enabled'], [
+        section('words', '哪些词会唤醒', '消息里出现任一关键词就会回应，如：小喵、江楠、楠酱。', ['keyword_wake_list']),
         section('advanced', '高级设置', '限制生效群范围。', ['keyword_wake_group_whitelist', 'keyword_wake_group_blacklist'], true)
       ], ['keyword_wake_enabled'])
     ] },
-    { id: 'activity', title: '聊天记录与参考', note: '记录近期聊天、查看其它会话，并按需要参考聊天或长期记忆。', sections: [
-      feature('recording', '聊天记录', '停止记录会暂停会话速览，已有记录仍然保留。', ['activity_buffer_enabled'], [
-        section('sources', '记录哪些消息', '', ['activity_record_private', 'activity_record_bot_replies', 'resident_inbox_enabled']),
-        section('retention', '保留多久', '', ['activity_retention_days']),
+    { id: 'activity', title: '聊天记录与参考', note: '把最近的聊天存下来，让机器人能回忆、翻别的群/私聊，并按需要参考聊天或长期记忆。', sections: [
+      feature('recording', '聊天记录', '把最近的聊天存到本插件记录库，供回忆和跨会话查看。关闭后停止记录但不清空已存内容。', ['activity_buffer_enabled'], [
+        section('sources', '记录哪些消息', '群聊默认记录；私聊和机器人自己的回复可以单独开关。', ['activity_record_private', 'activity_record_bot_replies', 'resident_inbox_enabled']),
+        section('retention', '保留多久', '默认保留 7 天，超期自动清理。', ['activity_retention_days']),
         section('advanced', '高级设置', '记录群范围、单条长度和保存位置。', [], true, [
           section('scope', '记录哪些群', '名单改变不会删除已经保存的记录。', ['activity_group_whitelist', 'activity_group_blacklist']),
           section('storage', '记录长度与保存位置', '数据库路径留空使用插件默认位置。', ['activity_buffer_max_text_chars', 'activity_db_path'])
         ])
       ], ['activity_buffer_enabled']),
-      feature('permissions', '查看权限', '允许模型通过会话速览工具查询聊天记录。', ['activity_tool_enabled'], [
+      feature('permissions', '查看权限', '决定谁能让机器人翻聊天记录：默认只有主人/管理员能查别的群和私聊。', ['activity_tool_enabled'], [
         section('access', '谁可以查看其它会话', '', ['activity_require_admin']),
         section('hint', '提醒模型可以查询', '', ['activity_hint_enabled'])
       ], ['activity_tool_enabled']),
-      feature('reference', '聊天参考', '选择别处聊天怎样进入当前回复，仍遵守记录范围和查看权限。', ['@reference'], [
-        section('keywords', '什么时候自动参考', '', ['activity_prefetch_keywords'])
+      feature('reference', '聊天参考', '选一种方式让机器人参考「其他群/私聊最近聊了什么」：① 需要时自己查；② 你提到别处时自动带；③ 每轮都带一份。', ['@reference'], [
+        section('keywords', '什么时候自动参考', '在「关键词预取」模式下生效：你问别的群/翻记录时，自动附带近期记录。', ['activity_prefetch_keywords'])
       ]),
-      feature('memory', '长期记忆', '命中触发词后从 LivingMemory 检索，未安装时跳过。', ['lmem_gateway_enabled'], [
+      feature('memory', '长期记忆', '配合长期记忆插件：当你问「上次我们说好的事」这类话时，机器人去翻长期记忆。没装插件就自动跳过。', ['lmem_gateway_enabled'], [
         section('keywords', '什么时候查记忆', '', ['lmem_gateway_keywords']),
         section('advanced', '高级设置', '检索数量、等待时间和兼容参数。', [], true, [
           section('limits', '检索限制', '', ['lmem_gateway_top_k', 'lmem_gateway_timeout_seconds', 'lmem_gateway_max_chars']),
@@ -311,32 +401,32 @@
         ])
       ], ['lmem_gateway_enabled'])
     ] },
-    { id: 'proactive', title: '主动消息', note: '允许模型主动联系指定的群和用户。', sections: [
-      feature('send', '主动联系', '模型通过 send_message 发起消息；静默时段内顺延到时段结束。', ['proactive_enabled'], [
-        section('targets', '可以联系谁', '允许群留空表示不向任何群发送；主人和管理员始终允许被主动私聊。', ['proactive_allow_groups', 'proactive_target_whitelist']),
-        section('frequency', '多久联系一次', '', ['proactive_daily_limit_per_person', 'proactive_cooldown_minutes']),
-        section('quiet', '什么时候保持安静', '开始与结束相同表示关闭静默时段，按页面显示的机器人时区运行。', ['proactive_quiet_hours_start', 'proactive_quiet_hours_end']),
+    { id: 'proactive', title: '主动消息', note: '允许机器人主动找人说话（比如你让它「明天提醒我」，或它想主动问候你）。只在允许名单内生效，有次数和冷却限制。', sections: [
+      feature('send', '主动联系', '机器人通过「发消息」工具主动联系允许的目标；深夜静默时段内发出的会顺延到时段结束再发。', ['proactive_enabled'], [
+        section('targets', '可以联系谁', '允许的群留空 = 不向任何群主动发；主人和管理员始终允许被主动私聊。', ['proactive_allow_groups', 'proactive_target_whitelist']),
+        section('frequency', '多久联系一次', '同一目标每天最多几次、两次之间至少隔多久。', ['proactive_daily_limit_per_person', 'proactive_cooldown_minutes']),
+        section('quiet', '什么时候保持安静', '开始与结束相同 = 不设静默时段。按页面显示的机器人时区运行。', ['proactive_quiet_hours_start', 'proactive_quiet_hours_end']),
         section('advanced', '高级设置', '待发数量、模型提醒和生成时参考的会话。', [], true, [
-          section('pending', '最多积攒多少待发消息', '', ['proactive_max_pending_per_person']),
-          section('context', '生成时参考哪些会话', '也会影响自醒；普通回复的参考方式在“聊天记录与参考”中设置。', ['proactive_context_other_sessions', 'proactive_context_other_private']),
+          section('pending', '最多积攒多少待发消息', '静默时段内同一目标最多排队几条，超出拒绝新增。', ['proactive_max_pending_per_person']),
+          section('context', '生成时参考哪些会话', '发消息前参考其他群/私聊的近况，话说得更自然；也会影响自醒。', ['proactive_context_other_sessions', 'proactive_context_other_private']),
           section('hint', '提醒模型可以主动联系', '', ['proactive_hint_enabled'])
         ])
       ], ['proactive_enabled'])
     ] },
-    { id: 'selfwake', title: '自醒', note: '没有新消息时定期醒来，决定要不要行动。', sections: [
-      feature('wake', '安静时自己醒来', '真人消息会重新开始安静计时；静默时段内不自醒。', ['proactive_silent_wake_enabled'], [
-        section('model', '使用哪个模型', '', ['proactive_judge_provider_id']),
-        section('schedule', '多久醒来、每天几次', '每日自醒次数与主动消息发送次数分别限制。', ['proactive_silent_wake_target_mean_minutes', 'proactive_silent_wake_daily_budget']),
-        section('tools', '醒来后可以做什么', '', ['proactive_silent_wake_allow_tools', 'resident_extra_tools']),
+    { id: 'selfwake', title: '自醒', note: '群里没人说话时，机器人会自己醒来想想：要不要主动问候、查点什么、整理下状态。像「偶尔关心你一下」，每天有次数上限。', sections: [
+      feature('wake', '安静时自己醒来', '安静一段时间后醒来做一轮完整思考（可查记录、想说话就发）。有人说话就重新计时；静默时段内不醒。', ['proactive_silent_wake_enabled'], [
+        section('model', '使用哪个模型', '留空用全局默认模型；指定模型不可用时本轮失败，不自动换。', ['proactive_judge_provider_id']),
+        section('schedule', '多久醒来、每天几次', '决定安静多久后醒来的概率，不是固定闹钟；自醒次数与主动消息发送次数分别限制。', ['proactive_silent_wake_target_mean_minutes', 'proactive_silent_wake_daily_budget']),
+        section('tools', '醒来后可以做什么', '允许调用工具时能做更多事（查记录、发消息等）；关闭则只做简短判断。', ['proactive_silent_wake_allow_tools', 'resident_extra_tools']),
         section('advanced', '高级设置', '间隔边界、执行步骤和模型用量限制。', [], true, [
           section('intervals', '醒来间隔的上下限', '上下限至少相差 2 分钟，平均间隔距离两端至少 1 分钟。', ['proactive_silent_wake_floor_minutes', 'proactive_silent_wake_ceil_minutes']),
-          section('steps', '最多执行几步', '', ['proactive_silent_wake_max_steps']),
-          section('tokens', '模型用量限制', '0 表示不额外限制。', ['resident_run_token_limit', 'resident_daily_token_limit'])
+          section('steps', '最多执行几步', '单轮最多走几步 = 单次成本上限。调小省钱但能做的事变少。', ['proactive_silent_wake_max_steps']),
+          section('tokens', '模型用量限制', '0 = 不额外限制。', ['resident_run_token_limit', 'resident_daily_token_limit'])
         ])
       ], ['proactive_silent_wake_enabled'])
     ] },
-    { id: 'advanced', title: '高级', note: '通用工具提示词与能力文案；各功能的详细参数在对应功能内设置。', sections: [
-      feature('prompts', '自定义工具提示词', '为工具调用补充通用提示，通常保持默认即可。', ['tool_call_prompt_enabled'], [
+    { id: 'advanced', title: '高级', note: '通用工具提示词与能力说明，通常保持默认即可；各功能的详细参数在对应功能内设置。', sections: [
+      feature('prompts', '自定义工具提示词', '给机器人的工具调用补充通用提示，一般不用改。', ['tool_call_prompt_enabled'], [
         section('advanced', '高级设置', '发送给模型的通用工具提示。', ['tool_call_prompt'], true)
       ], ['tool_call_prompt_enabled']),
       feature('capability', '自定义能力说明', '自定义文案会覆盖内置提示，请与实际功能开关保持一致。', [], [
@@ -344,26 +434,26 @@
       ])
     ] }
   ];
-  GROUPS.push({ id: 'resident', title: '自主运行与状态', note: '查看真实运行回执、能力联动、信箱与风格提案。下方管理操作即时生效，配置开关仍需保存。', sections: [feature('state', '自主状态', '', ['resident_state_enabled'])] });
-  GROUPS.push({ id: 'shared_memory', title: '共享记忆与信箱', note: '跨会话主脑、未读信箱、话题概括与群聊识图。全部默认关闭，开启后生效。', sections: [
-    feature('master', '全局主脑共享记忆', '所有会话共享同一个主脑会话的连续记忆；并发的聊天回合串行持锁。', ['shared_memory_enabled'], [
-      section('target', '主脑会话', '显式填写优先；留空且开启自动绑定时，首次管理员私聊自动绑定。', ['master_umo', 'master_auto_bind'])
+  GROUPS.push({ id: 'resident', title: '自主运行与状态', note: '看机器人自主运行的真实记录（调过什么工具、发过什么话、有没有失败），以及心情/状态、表达风格提案。这里的操作即时生效；页面顶部的开关仍要保存才生效。', sections: [feature('state', '自主状态', '心情、关注点和风格提案都从这里看和管理。', ['resident_state_enabled'])] });
+  GROUPS.push({ id: 'shared_memory', title: '共享记忆与信箱', note: '四项进阶能力，全部默认关闭：① 主脑=让所有群/私聊共享同一段记忆；② 信箱=群聊没被点名时不打扰、消息先收起来；③ 话题概括=把一段聊天压成一句话；④ 群聊识图=记住群里的图并能回答关于图的问题。', sections: [
+    feature('master', '全局主脑共享记忆', '让机器人跨群、跨私聊记得同一件事：在 A 群说的事，B 群里也能接上。适合想要「同一个猫」的感觉；多群同时聊天时会排队。默认关闭。', ['shared_memory_enabled'], [
+      section('target', '主脑会话', '显式填写优先；留空且开启自动绑定时，你与管理员第一次私聊会自动绑定。', ['master_umo', 'master_auto_bind'])
     ], ['shared_memory_enabled']),
-    feature('inbox', '未读信箱分流', '群里未点名、未命中关键词的普通消息静默进信箱，不再回复；点名时仍即时回复。', ['unread_inbox_enabled'], [
+    feature('inbox', '未读信箱分流', '群里没 @ 你、没提关键词的普通消息，机器人先不回复、收进「未读信箱」；等有人点名或提关键词再一次性回应。省得每句话都搭话。默认关闭。', ['unread_inbox_enabled'], [
       section('scope', '在哪些群启用', '名单留空表示不限制；群排除名单优先。', ['inbox_group_whitelist', 'inbox_group_blacklist'])
     ], ['unread_inbox_enabled']),
-    feature('notice', '点名通知卡', '@ 或关键词唤醒时注入未读情况、近期话题与最近消息，并标记当前会话已读。', ['mention_notice_enabled'], [
+    feature('notice', '点名通知卡', '有人点名你时，机器人在回复里带一句「你不在时有 N 条未读、最近在聊 XX」，让它知道前面错过了什么。默认关闭。', ['mention_notice_enabled'], [
       section('detail', '通知卡内容', '', ['mention_notice_limit'])
     ], ['mention_notice_enabled']),
-    feature('topic', '话题概括', '轻量模型把一段未读聊天压成一句话题，注入会话清单与点名通知卡。', ['topic_summary_enabled'], [
+    feature('topic', '话题概括', '用便宜的模型把一段没看的聊天总结成一句话（比如「在聊怎么养猫」），机器人回看时一目了然。默认关闭。', ['topic_summary_enabled'], [
       section('model', '使用哪个模型', '留空使用会话默认模型。', ['topic_light_provider_id']),
-      section('trigger', '什么时候概括', '', ['topic_min_unread', 'topic_cooldown_seconds']),
+      section('trigger', '什么时候概括', '未读够多才概括，且两次之间要有间隔，避免高频群反复烧模型。', ['topic_min_unread', 'topic_cooldown_seconds']),
       section('advanced', '高级设置', '话题长度、分段与超时。', [], true, [
         section('length', '话题长度', '', ['topic_max_chars', 'topic_line_max_chars']),
         section('segments', '分段与超时', '', ['topic_segment_msg_count', 'topic_segment_backfill_max', 'topic_timeout_seconds'])
       ])
     ], ['topic_summary_enabled']),
-    feature('vision', '群聊识图', '群里发来的图片被留底并在后台自动转述，模型可用 read_image 工具查看任意一张图。', ['vision_enabled'], [
+    feature('vision', '群聊识图', '群友发的图片会被存下来并自动转成文字描述，之后你问「刚才那张图里是什么」，机器人能回答。图片默认保留 3 天。默认关闭。', ['vision_enabled'], [
       section('model', '使用哪些模型', '每行一个模型 ID，按顺序回退；留空使用 AstrBot 默认识图模型。', ['vision_provider_ids']),
       section('retention', '留底与缓存', '', ['image_keep_days', 'vision_cache_ttl_days']),
       section('advanced', '高级设置', '留底张数与描述长度。', [], true, [
@@ -724,12 +814,12 @@
         selfwake: [['proactive_silent_wake_enabled', '启用静默自醒']]
       };
       var conditions = {
-        debounce: '需开启群聊或私聊场景；群消息需先唤醒机器人，名单继续限制范围。',
-        human_reply: '仅处理非流式纯文本；群名单同时限制发送与请求打断。',
-        interaction: '各项独立生效；关键词需有词条；屏蔽名单优先于刷屏免检名单。',
-        activity: '速览查询需开启聊天记录；长期记忆检索需安装 LivingMemory。',
-        proactive: '仅向允许目标发送；群名单为空时只允许主人、管理员等获准私聊目标。',
-        selfwake: '需开启主动消息且日预算大于 0；静默时段内暂停。'
+        debounce: '需开启群聊或私聊场景；群消息要先「叫了机器人」才会合并，发指令（/开头）不合并。',
+        human_reply: '只对纯文字回复生效；图片、转发、流式回复不受影响。',
+        interaction: '三件事互不干扰：刷屏拦截管连刷、屏蔽名单管拉黑、被戳和关键词管回应。屏蔽名单优先，被屏蔽的人发什么都不回。',
+        activity: '机器人要能翻记录，需先开启「聊天记录」；要翻长期记忆，需安装 LivingMemory 插件。',
+        proactive: '只发给允许名单里的目标；群名单为空时只允许主人/管理员等获准私聊的人。',
+        selfwake: '需同时开启「主动消息」且每日自醒次数大于 0；静默时段内不自醒。'
       };
       GROUPS.slice(1, 7).forEach(function (group) {
         var card = node('section', 'overview-card'); card.dataset.group = group.id;

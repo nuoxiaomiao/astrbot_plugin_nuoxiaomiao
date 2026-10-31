@@ -1,4 +1,4 @@
-{
+﻿{
   "enabled": {
     "description": "【总览】启用插件",
     "type": "bool",
@@ -10,7 +10,7 @@
     "description": "【消息合并】防抖合并",
     "type": "bool",
     "default": true,
-    "hint": "同一用户连续发送的消息先合并再交给模型。与连刷检测名单分开生效。",
+    "hint": "同一人连着发的好几条消息会拼成一条再回复，减少来回打断、省 token。和刷屏拦截是两回事。",
     "group": "消息合并"
   },
   "debounce_dynamic_enabled": {
@@ -24,14 +24,14 @@
     "description": "【消息合并】群聊防抖",
     "type": "bool",
     "default": true,
-    "hint": "群聊里是否启用防抖。",
+    "hint": "群聊里是否启用消息合并。",
     "group": "消息合并"
   },
   "debounce_private_enabled": {
     "description": "【消息合并】私聊防抖",
     "type": "bool",
     "default": true,
-    "hint": "私聊里是否启用防抖。",
+    "hint": "私聊里是否启用消息合并。",
     "group": "消息合并"
   },
   "debounce_user_whitelist": {
@@ -83,7 +83,7 @@
     "description": "【消息合并】只叫名字等待（秒）",
     "type": "float",
     "default": 4.0,
-    "hint": "仅在按内容选择等待时生效。只有唤醒词、尚未说明内容时多等一会，便于接上下一句。",
+    "hint": "只在按内容选择等待时生效：对方只叫了名字、还没说具体内容时，多等一会好接下一句。",
     "slider": {
       "min": 0.0,
       "max": 10.0,
@@ -278,14 +278,14 @@
     "description": "【拦截与互动】群聊连刷拦截",
     "type": "bool",
     "default": true,
-    "hint": "只控制群聊的连刷检测，不是群聊总开关；关键词唤醒、防抖、自醒有各自设置。",
+    "hint": "只控制群聊的刷屏拦截；关键词唤醒、消息合并、自醒有各自开关。",
     "group": "拦截与互动"
   },
   "include_private": {
     "description": "【拦截与互动】私聊连刷拦截",
     "type": "bool",
     "default": true,
-    "hint": "只控制私聊的连刷检测，不是私聊总开关。",
+    "hint": "只控制私聊的刷屏拦截。",
     "group": "拦截与互动"
   },
   "poke_reply_enabled": {
@@ -339,14 +339,14 @@
     "description": "【拦截与互动】连刷豁免用户（不影响防抖）",
     "type": "list",
     "default": [],
-    "hint": "只免除连刷拦截，仍受屏蔽用户、防抖合并等设置影响。填写用户 ID；留空表示无人豁免。",
+    "hint": "只免除刷屏拦截；仍受屏蔽名单、消息合并等设置影响。填写用户 ID；留空表示无人豁免。",
     "group": "拦截与互动"
   },
   "user_blacklist": {
     "description": "【拦截与互动】连刷检测用户（留空检测全部）",
     "type": "list",
     "default": [],
-    "hint": "这是连刷检测范围，不是屏蔽名单。留空检测所有人；填写后只检测这些用户。连刷豁免名单优先。",
+    "hint": "这是刷屏拦截的检测范围，不是屏蔽名单。留空检测所有人；填写后只检测这些用户。",
     "group": "拦截与互动"
   },
   "guard_group_whitelist": {
@@ -417,7 +417,7 @@
     "description": "【聊天记录与参考】记录聊天消息",
     "type": "bool",
     "default": true,
-    "hint": "把近期聊天写入本插件的记录库，供会话速览与近况参考使用；与 LivingMemory 长期记忆分工不同。",
+    "hint": "把近期聊天存到本插件的记录库，供机器人回忆和跨会话查看；和长期记忆插件是两套东西。",
     "group": "聊天记录与参考"
   },
   "activity_record_private": {
@@ -483,7 +483,7 @@
     "description": "【聊天记录与参考】允许模型查看记录",
     "type": "bool",
     "default": true,
-    "hint": "让模型通过 list_conversations / read_conversation_messages 主动查询近期记录；查询权限由“仅主人/管理员可查看”控制。",
+    "hint": "让机器人能主动翻近期记录（别的群/私聊）；谁能翻由「仅主人/管理员可查看」控制。",
     "group": "聊天记录与参考"
   },
   "activity_hint_enabled": {
@@ -580,7 +580,7 @@
     "description": "【主动消息】允许主动发送消息",
     "type": "bool",
     "default": true,
-    "hint": "允许模型调用 send_message 即时向允许的目标发消息。静默时段会顺延；此开关也是自醒的前提。",
+    "hint": "允许机器人主动向允许的目标发消息。深夜静默时段内会推迟到时段结束再发；这也是「自醒」的前提。",
     "group": "主动消息"
   },
   "proactive_hint_enabled": {
@@ -672,7 +672,7 @@
     "description": "【自醒】静默自醒",
     "type": "bool",
     "default": true,
-    "hint": "需要主动消息开启。安静一段时间后自动起一轮模型活动，可以思考、查工具或决定发言；自醒次数不等于发送次数。",
+    "hint": "需要先开启主动消息。没人说话一段时间后，机器人自己醒来思考一轮：可以查记录、想说话就发。自醒次数不等于实际发言次数。",
     "group": "自醒"
   },
   "proactive_judge_provider_id": {
@@ -877,14 +877,14 @@
     "description": "【共享记忆与信箱】全局主脑共享记忆",
     "type": "bool",
     "default": false,
-    "hint": "开启后所有会话共享同一个主脑会话的连续记忆，跨群、跨私聊不断片；并发的聊天回合会串行持锁，防止历史被覆盖。默认关闭。",
+    "hint": "开启后，机器人跨群、跨私聊记得同一件事（共享同一段记忆）；多群同时聊天时会排队处理，防止记忆互相覆盖。默认关闭。",
     "group": "共享记忆与信箱"
   },
   "master_umo": {
     "description": "【共享记忆与信箱】主脑会话",
     "type": "string",
     "default": "",
-    "hint": "完整的会话 UMO，如 napcat:GroupMessage:12345。留空且开启自动绑定时，会在你与管理员第一次私聊时自动绑定。",
+    "hint": "填完整会话编号（如 napcat:GroupMessage:12345）。留空且开启自动绑定时，会在你与管理员第一次私聊时自动绑定。",
     "group": "共享记忆与信箱"
   },
   "master_auto_bind": {
@@ -919,7 +919,7 @@
     "description": "【共享记忆与信箱】点名通知卡",
     "type": "bool",
     "default": false,
-    "hint": "开启后，@ 或关键词唤醒时在提示中注入该会话的未读情况、近期话题与最近消息，并把当前会话标记已读。默认关闭。",
+    "hint": "开启后，有人点名你时，机器人会带上该群的未读条数、近期话题和最近消息，并把这群标记为已读。默认关闭。",
     "group": "共享记忆与信箱"
   },
   "mention_notice_limit": {
@@ -938,7 +938,7 @@
     "description": "【共享记忆与信箱】话题概括",
     "type": "bool",
     "default": false,
-    "hint": "开启后，轻量模型把一段未读聊天压成一句话题，注入会话清单与点名通知卡。默认关闭。",
+    "hint": "开启后，用便宜的模型把一段没看的聊天总结成一句话（比如「在聊怎么养猫」），方便机器人回看。默认关闭。",
     "group": "共享记忆与信箱"
   },
   "topic_light_provider_id": {
@@ -1036,7 +1036,7 @@
     "description": "【共享记忆与信箱】群聊识图",
     "type": "bool",
     "default": false,
-    "hint": "开启后，群里发来的图片被留底并在后台自动转述，模型可用 read_image 工具按会话与消息查看任意一张图。默认关闭。",
+    "hint": "开启后，群里的图片会被保存下来并自动转成文字描述，之后机器人能回答「那张图里是什么」。默认关闭。",
     "group": "共享记忆与信箱"
   },
   "vision_provider_ids": {
