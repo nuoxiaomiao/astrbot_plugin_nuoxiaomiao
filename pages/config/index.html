@@ -23,7 +23,7 @@
         <button id="drawer-toggle" class="icon-btn mobile-only" type="button" aria-label="打开配置导航">☰</button>
         <div class="search-wrap">
           <span class="search-icon" aria-hidden="true">⌕</span>
-          <input id="search" type="search" placeholder="搜索功能、配置项或说明" aria-label="搜索配置" autocomplete="off">
+          <input id="search" type="search" placeholder="搜索配置项或说明" aria-label="搜索配置" autocomplete="off">
           <button id="search-clear" class="icon-btn search-clear" type="button" aria-label="清空搜索" hidden>×</button>
         </div>
         <label class="pending-filter" title="只显示有未保存修改的配置项">
@@ -34,7 +34,6 @@
       <div class="page-heading">
         <div class="heading-copy">
           <p class="eyebrow">CONFIGURATION</p>
-          <nav id="breadcrumb" class="crumb" aria-label="当前位置"></nav>
           <h1 id="page-title">总览</h1>
           <p id="page-description"></p>
         </div>
@@ -50,8 +49,6 @@
           <small id="save-detail">配置加载后可编辑</small>
         </div>
         <div class="save-actions">
-          <button id="export-config" class="btn quiet" type="button" title="把当前草稿的完整配置复制为 JSON">导出配置</button>
-          <button id="import-config" class="btn quiet" type="button" title="从 JSON 粘贴覆盖当前草稿">导入配置</button>
           <button id="revert" class="btn quiet" type="button" disabled>撤销修改</button>
           <div class="dropdown">
             <button id="default-menu-btn" class="btn quiet" type="button" aria-haspopup="true" aria-expanded="false">默认设置 ▾</button>
@@ -70,21 +67,6 @@
   <div id="boot" class="boot" role="status">
     <span class="brand-icon" aria-hidden="true">喵</span>
     <p>正在读取配置…</p>
-  </div>
-  <div id="import-dialog" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="import-title">
-    <div class="modal-panel">
-      <div class="modal-head">
-        <h2 id="import-title">导入配置（JSON）</h2>
-        <button id="import-close" class="icon-btn" type="button" aria-label="关闭">×</button>
-      </div>
-      <p class="field-hint">粘贴一份由「导出配置」生成的 JSON。只接受有效字段，未知键会被忽略；导入内容先进入草稿，点「保存修改」才生效。</p>
-      <textarea id="import-text" class="import-text" rows="10" spellcheck="false" placeholder='{ "debounce_slow_idle_seconds": 1.2, ... }'></textarea>
-      <div id="import-error" class="notice error" role="alert" hidden></div>
-      <div class="modal-actions">
-        <button id="import-cancel" class="btn quiet" type="button">取消</button>
-        <button id="import-apply" class="btn primary" type="button">填入草稿</button>
-      </div>
-    </div>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <script src="./resident.js"></script>

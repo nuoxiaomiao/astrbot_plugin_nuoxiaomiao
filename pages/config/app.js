@@ -1,9 +1,9 @@
-/* 糯小喵配置中心 — 重写版（schema 驱动，草稿/保存/基线状态机）。
+/* 糯小喵配置中心 — 极简版（schema 驱动，草稿/保存/基线状态机）。
  * 设计约束：
  *  - 纯静态文件，无构建步骤、无外部依赖，由 AstrBot 直接服务。
  *  - 通过 window.AstrBotPluginPage 桥接（apiGet/apiPost/ready）。
  *  - 导出纯函数供 tests/test_config_ui.js 使用（UMD）。
- * 结构分区：utils → bridge → schema → groups → state → controls → render → io → app。
+ *  - 视觉极简、功能收敛：分组导航 + 字段卡片流 + 搜索 + 待保存 + 保存/默认快照。
  */
 (function (root, factory) {
   'use strict';
@@ -146,7 +146,6 @@
       : Array.isArray(value) ? value.length ? value.join('、') : '空名单'
       : value === true ? '开启' : value === false ? '关闭' : String(value);
   }
-  function isScalarType(type) { return type === 'bool' || type === 'int' || type === 'float' || type === 'string' || type === 'text'; }
 
   /* ============================ 引用/工具模式（纯函数） ============================ */
   function referenceMode(value) {
@@ -212,8 +211,7 @@
     return {};
   }
 
-  /* ============================ 导入/导出/diff（纯函数） ============================ */
-  /** 导出：把草稿中 schema 存在的键序列化为 JSON 文本（用于复制）。 */
+  /* ============================ 导入/导出/diff（纯函数，无 UI） ============================ */
   function exportConfig(state, schema) {
     var out = {};
     Object.keys(schema).forEach(function (key) {
@@ -221,7 +219,6 @@
     });
     return JSON.stringify(out, null, 2);
   }
-  /** 导入：解析 JSON 文本，只接受 schema 已知键并按类型归一；返回 {values, errors}。 */
   function importConfig(text, schema, defaults) {
     var errors = {}, values = {};
     var parsed;
@@ -234,7 +231,7 @@
       return { values: {}, errors: { _global: '需要一段 JSON 对象（以 { 开头）。' } };
     }
     Object.keys(parsed).forEach(function (key) {
-      if (!own(schema, key)) return; // 未知键静默忽略
+      if (!own(schema, key)) return;
       var spec = schema[key], raw = parsed[key];
       if (spec.type === 'bool') {
         if (raw === true || raw === 'true' || raw === 1 || raw === '1' || raw === 'on') values[key] = true;
@@ -261,7 +258,6 @@
     });
     return { values: values, errors: errors };
   }
-  /** 生成待保存项的 diff 列表：{key, title, old, new, listChanged}。 */
   function buildDiffList(state, baseline, schema) {
     return dirtyKeys(state, baseline, schema).map(function (key) {
       var spec = schema[key] || {}, oldValue = clone(baseline[key]), newValue = clone(state[key]);
@@ -275,47 +271,7 @@
     });
   }
 
-  /* ---------- 信息架构辅助（分组 → 子功能 → 配置） ---------- */
-  /** 分组下的子功能清单：{id, title, enabled, dirty}，用于侧栏二级导航与索引条。 */
-  function subnavOf(group, state, schema, baseline) {
-    var items = [];
-    walkSections(group.sections, function (s) {
-      if (!s.feature) return;
-      var dirty = sectionFields(s).flatMap(configKeys).filter(function (k) {
-        return OMITTED_KEYS.indexOf(k) < 0 && !same(state[k], baseline[k]);
-      }).length;
-      items.push({
-        id: s.id,
-        title: s.title,
-        enabled: s.enabledKeys.length ? s.enabledKeys.some(function (k) { return !!state[k]; }) : true,
-        dirty: dirty
-      });
-    });
-    return items;
-  }
-  /** 分组下的子功能静态清单（索引条/总览标签用）。 */
-  function featureIndexFor(group) {
-    var items = [];
-    walkSections(group.sections, function (s) { if (s.feature) items.push({ id: s.id, title: s.title }); });
-    return items;
-  }
-  /** 子功能开关状态：全部开→on / 全关→off / 部分开→partial。 */
-  function featureState(s, state) {
-    if (!s.enabledKeys.length) return { cls: 'partial', label: '可配置' };
-    var keys = s.enabledKeys, on = keys.filter(function (k) { return !!state[k]; }).length;
-    if (on === keys.length) return { cls: 'on', label: '启用中' };
-    if (on === 0) return { cls: 'off', label: '已关闭' };
-    return { cls: 'partial', label: '部分开启' };
-  }
-  /** 面包屑路径：总览 › 分组 › 子功能。 */
-  function breadcrumbFor(group, feature) {
-    var parts = ['总览'];
-    if (group) parts.push(group.title);
-    if (feature) parts.push(typeof feature === 'string' ? feature : (feature.title || feature.id));
-    return parts;
-  }
-
-  /* ============================ 分组定义（与运行时字段归属一致） ============================ */
+  /* ============================ 分组定义 ============================ */
   function section(id, title, note, fields, advanced, children) { return { id: id, title: title, note: note, fields: fields || [], advanced: !!advanced, children: children || [] }; }
   function feature(id, title, note, fields, children, enabledKeys) {
     return Object.assign(section(id, title, note, fields, false, children), { feature: true, enabledKeys: enabledKeys || [] });
@@ -496,7 +452,7 @@
     var doc = win.document;
     var schema = {}, state = {}, baseline = {}, defaults = {}, userDefault = null;
     var providers = [], catalog = [], residentTools = [], diagnostics = [], timezone = '';
-    var activeGroup = 'overview', activeFeature = null, query = '', pendingOnly = false, saving = false, loaded = false;
+    var activeGroup = 'overview', query = '', pendingOnly = false, saving = false, loaded = false;
     var fieldErrors = {}, toastTimer = null, selectedToolMode = null;
     var expanded = {}, editingDisabled = {}, revealedFields = {};
     var featureViews = [], sectionViews = [];
@@ -661,9 +617,6 @@
       var top = node('div', 'field-top'), copy = node('div', 'field-copy'), label = node('label', 'field-label', fieldTitle(spec, key)); label.htmlFor = 'input-' + key; copy.appendChild(label);
       var hint = node('p', 'field-hint', spec.hint || ''); hint.id = 'hint-' + key; copy.appendChild(hint);
       var actions = node('div', 'field-actions');
-      // 复制当前值（新增能力）。
-      var copyBtn = button('复制', function () { copyToClipboard(win, valueText(state[key])); showToast('已复制「' + fieldTitle(spec, key) + '」的值。'); }, 'restore-field copy-field');
-      copyBtn.title = '复制当前值：' + valueText(state[key]); actions.appendChild(copyBtn);
       var reset = button('恢复' + (userDefault && own(userDefault, key) ? '我的默认' : '出厂默认'), function () { state[key] = clone(defaultOf(key)); delete fieldErrors[key]; if (key === 'proactive_silent_wake_tool_plugins') selectedToolMode = null; renderPane(); refresh(); }, 'restore-field'); reset.title = valueText(defaultOf(key)); actions.appendChild(reset); copy.appendChild(actions);
       top.appendChild(copy); var control = node('div', 'field-control'); control.appendChild(buildControl(key, spec));
       if (isBlock) { row.appendChild(top); row.appendChild(control); } else { top.appendChild(control); row.appendChild(top); }
@@ -696,14 +649,10 @@
     }
 
     /* ---------- 渲染 ---------- */
-    function renderSection(s, group, filter, ancestors, ord) {
+    function renderSection(s, group, filter, ancestors) {
       var path = (ancestors || []).concat(s.id), id = group.id + ':' + path.join(':');
-      // 子功能序号（分组内）+ 配置分组序号（子功能内），用于层级可视化。
-      var featureNo = s.feature ? featureIndexFor(group).findIndex(function (x) { return x.id === s.id; }) + 1 : (ord ? ord.feature : 0);
       var keys = s.fields.filter(function (key) { return visibleKey(key, s); });
-      var children = s.children.map(function (child, i) {
-        return renderSection(child, group, filter, path, { feature: featureNo || (ord ? ord.feature : 0), child: i + 1 });
-      }).filter(Boolean);
+      var children = s.children.map(function (child) { return renderSection(child, group, filter, path); }).filter(Boolean);
       if (!keys.length && !children.length) return null;
       if (s.feature) keys = s.fields.filter(function (key) { return key === '@reference' || (schema[key] && OMITTED_KEYS.indexOf(key) < 0); });
       var el = node(s.advanced ? 'details' : 'section', s.feature ? 'feature-card' : s.advanced ? 'section advanced-section' : 'subsection');
@@ -717,12 +666,6 @@
         copyEl.appendChild(title);
         if (s.note) copyEl.appendChild(node('p', 'feature-note', s.note));
         heading.appendChild(copyEl);
-        // 子功能编号 + 状态徽章（层级可视化的核心）。
-        var meta = node('div', 'feature-meta');
-        if (featureNo) meta.appendChild(node('span', 'feature-number', '子功能 ' + featureNo));
-        var fstate = featureState(s, state);
-        meta.appendChild(node('span', 'feature-status ' + fstate.cls, fstate.label));
-        heading.appendChild(meta);
         var pending = node('span', 'feature-pending'); pending.hidden = true; heading.appendChild(pending); el.appendChild(heading);
         var switches = node('div', 'feature-switches'); keys.forEach(function (key) { var row = field(key); if (row) switches.appendChild(row); });
         if (keys.length) el.appendChild(switches);
@@ -750,10 +693,7 @@
           try { win.localStorage.setItem('nxm_config_expanded', JSON.stringify(expanded)); } catch (_) {}
         });
       } else {
-        var stepTitle = node('h3', 'subsection-title');
-        if (ord) stepTitle.appendChild(node('span', 'section-step', ord.feature + '.' + ord.child + ' '));
-        stepTitle.appendChild(node('span', '', s.title));
-        el.appendChild(stepTitle);
+        el.appendChild(node('h3', 'subsection-title', s.title));
         if (s.note) el.appendChild(node('p', 'subsection-note', s.note));
         body = node('div', 'subsection-body'); el.appendChild(body);
       }
@@ -835,13 +775,6 @@
           var error = node('p', 'field-error'); error.id = 'error-' + key; row.appendChild(error); settings.appendChild(row);
         });
         card.appendChild(settings); card.appendChild(node('p', 'overview-condition', conditions[group.id]));
-        // 功能地图：列出该分组的子功能标签，点击直达对应子功能卡片。
-        var tags = node('div', 'overview-tags');
-        featureIndexFor(group).forEach(function (item) {
-          var tag = button(item.title, function () { navigate(group.id, item.id); }, 'overview-tag');
-          tags.appendChild(tag);
-        });
-        card.appendChild(tags);
         card.appendChild(button('查看设置 →', function () { navigate(group.id); }, 'overview-link')); grid.appendChild(card);
       });
       grid.appendChild(button('高级：通用工具提示词和自定义能力文案 →', function () { navigate('advanced'); }, 'overview-advanced'));
@@ -854,53 +787,16 @@
         card.querySelector('.overview-summary').textContent = summaryFor(groupOfTitle(id))[1];
       });
     }
-    function renderDiffList() {
-      var diffs = buildDiffList(state, baseline, schema);
-      if (!diffs.length) return null;
-      var wrap = node('section', 'diff-panel');
-      wrap.appendChild(node('h2', 'diff-title', '待保存的修改'));
-      wrap.appendChild(node('p', 'field-hint', '以下是你尚未保存的改动。点击条目跳到对应设置；点「保存修改」统一生效。'));
-      var list = node('ul', 'diff-list');
-      diffs.forEach(function (item) {
-        var li = node('li', 'diff-item');
-        var head = node('button', 'diff-head'); head.type = 'button';
-        head.appendChild(node('strong', 'diff-label', item.title));
-        head.appendChild(node('code', '', item.key));
-        head.addEventListener('click', function () { focusField(item.key); });
-        li.appendChild(head);
-        var body = node('div', 'diff-body');
-        var oldNode = node('div', 'diff-side diff-old'), newNodes = node('div', 'diff-side diff-new');
-        oldNode.appendChild(node('small', '', '当前'));
-        oldNode.appendChild(node('pre', '', item.old === '' ? '（空）' : item.old));
-        newNodes.appendChild(node('small', '', '新值'));
-        newNodes.appendChild(node('pre', '', item.new === '' ? '（空）' : item.new));
-        body.appendChild(oldNode); body.appendChild(newNodes); li.appendChild(body);
-        list.appendChild(li);
-      });
-      wrap.appendChild(list);
-      return wrap;
-    }
     function renderPane() {
       var pane = $('pane'); pane.replaceChildren();
       featureViews = []; sectionViews = [];
       var filtering = !!query || pendingOnly;
       $('page-title').textContent = filtering ? pendingOnly ? '待保存的修改' : '搜索结果' : groupOfTitle(activeGroup).title;
       $('page-description').textContent = filtering ? (query ? '搜索“' + query + '”；' : '') + '显示全部分组中符合条件的配置项。' : groupOfTitle(activeGroup).note;
-      renderBreadcrumb(filtering);
       if (!filtering && activeGroup === 'overview') {
         var lead = node('div', 'overview-lead'); if (schema.enabled) lead.appendChild(field('enabled')); pane.appendChild(lead);
         pane.appendChild(node('p', 'field-hint', '以下摘要展示当前草稿。待保存的修改不会立即改变运行行为。'));
         var grid = node('div', 'overview-grid'); grid.id = 'overview-grid'; pane.appendChild(grid); renderOverviewStatus(); return;
-      }
-      if (pendingOnly) {
-        // 待保存模式：顶部给出 diff 总览，下面仍按分组展示字段。
-        var diff = renderDiffList();
-        if (diff) pane.appendChild(diff);
-      }
-      // 普通分组页：顶部子功能索引条，一眼看到本分组有哪些子功能。
-      if (!filtering && activeGroup !== 'overview' && activeGroup !== 'resident') {
-        var index = renderFeatureIndex(groupOfTitle(activeGroup));
-        if (index) pane.appendChild(index);
       }
       var count = 0;
       GROUPS.filter(function (group) { return filtering || group.id === activeGroup; }).forEach(function (group) {
@@ -910,77 +806,8 @@
       if (!filtering && activeGroup === 'resident' && win.NuoxiaomiaoResidentPanel) { var panel = node('div', 'resident-panel'); pane.appendChild(panel); win.NuoxiaomiaoResidentPanel.mount(panel, win); count += 1; }
       if (!count) pane.appendChild(node('div', 'empty', pendingOnly ? '没有符合条件的待保存修改。' : '没有找到匹配项。可以搜索“私聊”“名单”“自醒”等词。'));
     }
-    /** 分组页顶部的子功能索引条（chips），点击平滑滚动到对应卡片。 */
-    function renderFeatureIndex(group) {
-      var items = featureIndexFor(group);
-      if (!items.length) return null;
-      var wrap = node('nav', 'feature-index'); wrap.setAttribute('aria-label', group.title + '子功能');
-      wrap.appendChild(node('span', 'feature-index-label', '子功能'));
-      items.forEach(function (item) {
-        var chip = node('button', 'feature-index-chip' + (activeFeature === item.id ? ' active' : ''), item.title);
-        chip.type = 'button'; chip.dataset.feature = item.id;
-        chip.addEventListener('click', function () { scrollToFeature(group.id, item.id); });
-        wrap.appendChild(chip);
-      });
-      return wrap;
-    }
-    /** 滚动到指定子功能卡片并短暂高亮。 */
-    function scrollToFeature(groupId, featureId) {
-      activeFeature = featureId;
-      var target = $('feature-' + groupId + '-' + featureId);
-      if (!target) return;
-      doc.querySelectorAll('.feature-card.is-target').forEach(function (c) { c.classList.remove('is-target'); });
-      target.classList.add('is-target');
-      setTimeout(function () { target.classList.remove('is-target'); }, 1400);
-      target.scrollIntoView({ block: 'start', behavior: 'smooth' });
-      refresh();
-    }
-    /** 面包屑：总览 › 分组 › 子功能。 */
-    function renderBreadcrumb(filtering) {
-      var crumb = $('breadcrumb'); if (!crumb) return;
-      if (filtering) { crumb.replaceChildren(node('span', '', pendingOnly ? '总览 › 待保存的修改' : '总览 › 搜索结果')); return; }
-      if (activeGroup === 'overview') { crumb.replaceChildren(node('span', 'crumb-current', '总览')); return; }
-      var group = groupOfTitle(activeGroup);
-      var parts = [];
-      var home = button('总览', function () { navigate('overview'); }, 'crumb-link'); home.type = 'button'; parts.push(home);
-      parts.push(node('span', 'crumb-sep', '›'));
-      var groupBtn = button(group.title, function () { navigate(group.id); }, 'crumb-link'); groupBtn.type = 'button'; parts.push(groupBtn);
-      if (activeFeature) {
-        var f = featureIndexFor(group).find(function (x) { return x.id === activeFeature; });
-        parts.push(node('span', 'crumb-sep', '›'));
-        parts.push(node('span', 'crumb-current', f ? f.title : activeFeature));
-      }
-      crumb.replaceChildren.apply(crumb, parts);
-    }
     function groupOfTitle(id) { return GROUPS.find(function (group) { return group.id === id; }) || GROUPS[0]; }
-    function navigate(id, featureId) {
-      activeGroup = id; activeFeature = featureId || null;
-      query = ''; pendingOnly = false; revealedFields = {};
-      $('search').value = ''; $('pending-only').checked = false;
-      closeSidebar(); showSubnav(id); renderPane(); refresh();
-      win.scrollTo({ top: 0, behavior: 'auto' });
-      if (activeFeature) scrollToFeature(id, activeFeature);
-    }
-    /** 显示指定分组的二级子功能导航，隐藏其它分组的。 */
-    function showSubnav(groupId) {
-      doc.querySelectorAll('.group-subnav').forEach(function (sub) { sub.hidden = sub.id !== 'subnav-' + groupId; });
-      renderSubnav(groupId);
-    }
-    /** 渲染二级子功能导航内容（标题 + 状态点 + 待保存数）。 */
-    function renderSubnav(groupId) {
-      var sub = $('subnav-' + groupId); if (!sub) return;
-      var group = groupOfTitle(groupId);
-      sub.replaceChildren();
-      subnavOf(group, state, schema, baseline).forEach(function (item) {
-        var btn = button('', function () { navigate(groupId, item.id); }, 'subnav-button');
-        btn.dataset.feature = item.id;
-        btn.appendChild(node('span', 'subnav-status ' + (item.enabled ? 'on' : 'off'), ''));
-        btn.appendChild(node('span', 'subnav-title', item.title));
-        if (item.dirty) btn.appendChild(node('span', 'subnav-count', item.dirty));
-        sub.appendChild(btn);
-      });
-      if (!sub.children.length) sub.appendChild(node('p', 'subnav-empty', '无子功能'));
-    }
+    function navigate(id) { activeGroup = id; query = ''; pendingOnly = false; revealedFields = {}; $('search').value = ''; $('pending-only').checked = false; closeSidebar(); renderPane(); refresh(); win.scrollTo({ top: 0, behavior: 'auto' }); }
     function focusField(key) {
       var target = REFERENCE_KEYS.indexOf(key) >= 0 ? '@reference' : key;
       navigate(groupOf(key).id); revealedFields[target] = true; refresh();
@@ -1021,8 +848,6 @@
       banner.textContent = !baseline.enabled ? '当前运行：插件已关闭。' + (state.enabled ? '草稿已开启，保存后生效。' : '可先编辑设置，开启总开关并保存后恢复功能。') : '草稿已关闭总开关；保存后插件功能暂停。';
       renderErrors();
       refreshOverviewIndicators();
-      // 同步可见二级导航的待保存数。
-      doc.querySelectorAll('.group-subnav:not([hidden])').forEach(function (sub) { renderSubnav(sub.id.replace('subnav-', '')); });
     }
     function unwrap(response) { return response && response.data && typeof response.data === 'object' ? response.data : response || {}; }
     function updateMetadata(data) { if (Array.isArray(data.providers)) providers = data.providers; if (Array.isArray(data.tool_plugins)) catalog = data.tool_plugins; if (Array.isArray(data.resident_tools)) residentTools = data.resident_tools; if (Array.isArray(data.diagnostics)) diagnostics = data.diagnostics; if (typeof data.timezone === 'string') timezone = data.timezone; $('timezone').textContent = timezone ? '机器人时区：' + timezone : '机器人时区：未提供'; }
@@ -1065,33 +890,6 @@
       finally { saving = false; refresh(); }
     }
 
-    /* ---------- 导入/导出 ---------- */
-    function openImport() {
-      if (!loaded || !$('import-dialog')) return;
-      $('import-text').value = ''; $('import-error').hidden = true; $('import-error').textContent = '';
-      $('import-dialog').hidden = false; $('import-text').focus();
-    }
-    function closeImport() { if ($('import-dialog')) $('import-dialog').hidden = true; }
-    function applyImport() {
-      var box = $('import-error');
-      if (!box) return;
-      var result = importConfig($('import-text').value, schema, defaults);
-      if (result.errors._global) { box.textContent = result.errors._global; box.hidden = false; return; }
-      var fieldBad = Object.keys(result.errors).filter(function (k) { return k !== '_global'; });
-      if (fieldBad.length) { box.textContent = '部分字段不符合要求，已跳过：' + fieldBad.map(function (k) { return fieldTitle(schema[k], k) + '（' + result.errors[k] + '）'; }).join('；'); box.hidden = false; }
-      var count = Object.keys(result.values).length;
-      if (!count && !fieldBad.length) { box.textContent = '没有识别到任何已知配置项。'; box.hidden = false; return; }
-      Object.assign(state, result.values); fieldErrors = {}; closeImport();
-      showToast('已导入 ' + count + ' 项到草稿，点「保存修改」生效。');
-      renderPane(); refresh();
-    }
-    function doExport() {
-      if (!loaded) return;
-      var text = exportConfig(state, schema);
-      var ok = copyToClipboard(win, text);
-      showToast(ok ? '配置已复制为 JSON（含 ' + Object.keys(schema).length + ' 个字段）。' : '复制失败：请从浏览器控制台手动复制。');
-    }
-
     /* ---------- 初始化 ---------- */
     function wire(id, type, fn) { var el = $(id); if (el) el.addEventListener(type, fn); }
     function closeDefaultMenu() { $('default-menu').hidden = true; $('default-menu-btn').setAttribute('aria-expanded', 'false'); }
@@ -1099,15 +897,12 @@
     function init() {
       try { var theme = win.localStorage.getItem('nxm_config_theme'); if (theme) doc.documentElement.dataset.theme = theme; expanded = JSON.parse(win.localStorage.getItem('nxm_config_expanded') || '{}') || {}; } catch (_) {}
       var nav = $('tabs'); GROUPS.forEach(function (group, index) {
-        var tab = button('', function () { showSubnav(group.id); navigate(group.id); }, 'nav-button');
+        var tab = button('', function () { navigate(group.id); }, 'nav-button');
         tab.dataset.group = group.id;
         tab.appendChild(node('span', 'nav-number', String(index + 1).padStart(2, '0')));
         tab.appendChild(node('span', 'nav-title', group.title));
         var count = node('span', 'nav-count'); count.hidden = true; tab.appendChild(count);
         nav.appendChild(tab);
-        // 二级子功能导航（点击一级展开）。
-        var subnav = node('div', 'group-subnav'); subnav.id = 'subnav-' + group.id; subnav.hidden = true;
-        nav.appendChild(subnav);
       });
       wire('save', 'click', function () { save(false); });
       wire('save-default', 'click', function () { save(true); });
@@ -1115,13 +910,8 @@
       wire('restore-default', 'click', function () { restoreDefaults(false); });
       wire('restore-factory', 'click', function () { restoreDefaults(true); });
       wire('clear-default', 'click', clearDefault);
-      wire('export-config', 'click', doExport);
-      wire('import-config', 'click', openImport);
-      wire('import-apply', 'click', applyImport);
-      wire('import-cancel', 'click', closeImport);
-      wire('import-close', 'click', closeImport);
       wire('default-menu-btn', 'click', function () { var menu = $('default-menu'); menu.hidden = !menu.hidden; $('default-menu-btn').setAttribute('aria-expanded', String(!menu.hidden)); });
-      doc.addEventListener('click', function (event) { if (!event.target.closest('.dropdown') && !event.target.closest('#import-dialog')) closeDefaultMenu(); });
+      doc.addEventListener('click', function (event) { if (!event.target.closest('.dropdown')) closeDefaultMenu(); });
       wire('drawer-toggle', 'click', function () { $('sidebar').classList.add('open'); $('drawer-backdrop').hidden = false; });
       wire('drawer-close', 'click', closeSidebar);
       wire('drawer-backdrop', 'click', closeSidebar);
@@ -1129,7 +919,7 @@
       wire('search', 'input', function () { query = $('search').value.trim().toLowerCase(); renderPane(); refresh(); });
       wire('search-clear', 'click', function () { $('search').value = ''; query = ''; renderPane(); refresh(); });
       wire('pending-only', 'change', function () { pendingOnly = $('pending-only').checked; renderPane(); refresh(); });
-      doc.addEventListener('keydown', function (event) { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); save(false); } if (event.key === 'Escape') { closeSidebar(); closeDefaultMenu(); closeImport(); } });
+      doc.addEventListener('keydown', function (event) { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); save(false); } if (event.key === 'Escape') { closeSidebar(); closeDefaultMenu(); } });
       win.addEventListener('beforeunload', function (event) { if (!dirtyKeys(state, baseline, schema).length) return; event.preventDefault(); event.returnValue = ''; });
     }
     async function load() {
@@ -1159,25 +949,6 @@
     toolMode: toolMode, toolValues: toolValues, dirtyKeys: dirtyKeys, buildPatch: buildPatch, mergeSavedState: mergeSavedState,
     validateValues: validateValues, errorFields: errorFields, matches: matches,
     exportConfig: exportConfig, importConfig: importConfig, buildDiffList: buildDiffList,
-    subnavOf: subnavOf, featureIndexFor: featureIndexFor, featureState: featureState, breadcrumbFor: breadcrumbFor,
     mount: mount
   };
 });
-
-/* 剪贴板工具：优先 Clipboard API，回退 execCommand，返回是否成功。 */
-function copyToClipboard(win, text) {
-  try {
-    if (win.navigator && win.navigator.clipboard && win.navigator.clipboard.writeText) {
-      win.navigator.clipboard.writeText(text).catch(function () {});
-      return true;
-    }
-  } catch (_) {}
-  try {
-    var doc = win.document, ta = doc.createElement('textarea');
-    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
-    doc.body.appendChild(ta); ta.select();
-    var ok = doc.execCommand && doc.execCommand('copy');
-    doc.body.removeChild(ta);
-    return !!ok;
-  } catch (_) { return false; }
-}
