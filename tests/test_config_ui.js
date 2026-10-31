@@ -149,7 +149,7 @@ function fixture(config = {}, customPost, metadata = {}) {
   document.documentElement = document.createElement('html');
   document.getElementById = id => document.documentElement.querySelector('#' + id);
   document.querySelectorAll = selector => document.documentElement.querySelectorAll(selector);
-  const ids = ['app','sidebar','tabs','pane','page-title','page-description','timezone','banner','diagnostics','error-summary','boot','toast','dirty','save-detail','save','save-default','clear-default','restore-default','restore-factory','revert','search-clear','default-menu','default-menu-btn','drawer-toggle','drawer-close','drawer-backdrop','theme-toggle','search','pending-only'];
+  const ids = ['app','sidebar','tabs','pane','page-title','page-description','breadcrumb','timezone','banner','diagnostics','error-summary','boot','toast','dirty','save-detail','save','save-default','clear-default','restore-default','restore-factory','revert','search-clear','default-menu','default-menu-btn','drawer-toggle','drawer-close','drawer-backdrop','theme-toggle','search','pending-only'];
   for (const id of ids) { const element = document.createElement(id === 'search' || id === 'pending-only' ? 'input' : 'div'); element.id = id; document.documentElement.appendChild(element); }
   const calls = [], storage = new Map();
   const window = {document, events: {}, addEventListener(type, listener) { (this.events[type] ||= []).push(listener); }, scrollTo() {}, matchMedia() { return {matches: false}; }, localStorage: {getItem(key) { return storage.has(key) ? storage.get(key) : null; }, setItem(key, value) { storage.set(key, String(value)); }}, AstrBotPluginPage: {
@@ -739,4 +739,35 @@ test('buildDiffList reports old and new values for dirty keys', () => {
 
 test('buildDiffList is empty when nothing is dirty', () => {
   assert.deepEqual(ui.buildDiffList(copy(defaults), copy(defaults), schema), []);
+});
+
+/* ============ 新增：信息架构可视化 ============ */
+
+test('subnavOf lists every sub-feature with enabled and dirty state', () => {
+  const group = ui.GROUPS.find(item => item.id === 'interaction');
+  const base = {...copy(defaults), include_group: false, include_private: false};
+  const items = ui.subnavOf(group, {...base, trigger_rounds: 5}, schema, base);
+  assert.deepEqual(items.map(item => item.id), ['guard', 'blocked', 'poke', 'keyword']);
+  assert.equal(items[0].enabled, false); // include_group/include_private 全关
+  assert.equal(items[1].title, '屏蔽用户');
+  assert.equal(items[0].dirty, 1); // 仅 trigger_rounds 有未保存修改
+  assert.equal(items[3].id, 'keyword');
+});
+
+test('group page renders a feature-index and clicking a chip targets the feature', async () => {
+  const page = fixture(); await settled(); page.navigate('interaction');
+  const chips = page.document.querySelectorAll('.feature-index-chip');
+  assert.equal(chips.length, 4);
+  chips.find(chip => chip.textContent === '关键词唤醒').dispatch('click');
+  assert.ok(page.get('feature-interaction-keyword'));
+  assert.ok(page.get('feature-interaction-keyword').classList.contains('is-target'));
+});
+
+test('overview cards expose sub-feature tags that navigate into the group', async () => {
+  const page = fixture(); await settled();
+  const cards = page.document.querySelectorAll('.overview-card');
+  assert.equal(cards.length, 6);
+  for (const card of cards) assert.ok(card.querySelectorAll('.overview-tag').length >= 1, card.dataset.group);
+  page.document.querySelectorAll('.overview-tag').find(tag => tag.textContent === '屏蔽用户').dispatch('click');
+  assert.ok(page.get('feature-interaction-blocked').classList.contains('is-target'));
 });
