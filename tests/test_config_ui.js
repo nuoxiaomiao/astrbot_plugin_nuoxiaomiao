@@ -675,3 +675,68 @@ test('resident navigation uses the existing plugin page and stable run paginatio
   page.button('查看更早的运行').dispatch('click'); await settled();
   assert.deepEqual(page.reads[1], {route:'resident', params:{umo:'qq:GroupMessage:1',before:9}});
 });
+
+/* ============ 新增：导出 / 导入 / diff 纯函数 ============ */
+
+test('exportConfig serializes every schema key to valid JSON', () => {
+  const state = {...copy(defaults), trigger_rounds: 5, blocked_users: ['10001', '10002']};
+  const text = ui.exportConfig(state, schema);
+  const parsed = JSON.parse(text);
+  for (const key of Object.keys(schema)) assert.ok(Object.prototype.hasOwnProperty.call(parsed, key), key);
+  assert.equal(parsed.trigger_rounds, 5);
+  assert.deepEqual(parsed.blocked_users, ['10001', '10002']);
+  assert.deepEqual(JSON.parse(ui.exportConfig({unrelated: 1, ...state}, schema)), parsed);
+});
+
+test('importConfig round-trips an export into the draft', () => {
+  const state = {...copy(defaults), debounce_slow_idle_seconds: 1.6, human_reply_max_length: 320, keyword_wake_list: ['起床', '小喵']};
+  const text = ui.exportConfig(state, schema);
+  const result = ui.importConfig(text, schema, defaults);
+  assert.deepEqual(result.errors, {});
+  assert.equal(result.values.debounce_slow_idle_seconds, 1.6);
+  assert.equal(result.values.human_reply_max_length, 320);
+  assert.deepEqual(result.values.keyword_wake_list, ['起床', '小喵']);
+});
+
+test('importConfig rejects malformed JSON and non-object payloads', () => {
+  assert.ok(ui.importConfig('not json', schema, defaults).errors._global);
+  assert.ok(ui.importConfig('[1,2,3]', schema, defaults).errors._global);
+  assert.ok(ui.importConfig('', schema, defaults).errors._global);
+});
+
+test('importConfig ignores unknown keys and normalizes known types', () => {
+  const result = ui.importConfig('{"mystery_key": 1, "debounce_group_enabled": "true", "trigger_rounds": "7", "meme_tags": "a，b;c", "proactive_quiet_hours_start": "23:30"}', schema, defaults);
+  assert.deepEqual(result.errors, {});
+  assert.equal(result.values.mystery_key, undefined);
+  assert.equal(result.values.debounce_group_enabled, true);
+  assert.equal(result.values.trigger_rounds, 7);
+  assert.deepEqual(result.values.meme_tags, ['a', 'b', 'c']);
+  assert.equal(result.values.proactive_quiet_hours_start, '23:30');
+});
+
+test('importConfig reports invalid scalar values without dropping valid siblings', () => {
+  const result = ui.importConfig('{"trigger_rounds": "abc", "window_seconds": 120}', schema, defaults);
+  assert.ok(result.errors.trigger_rounds);
+  assert.equal(result.values.window_seconds, 120);
+  assert.equal(Object.keys(result.errors).length, 1);
+});
+
+test('buildDiffList reports old and new values for dirty keys', () => {
+  const baseline = {...copy(defaults)};
+  const state = {...baseline, trigger_rounds: 8, debounce_slow_idle_seconds: 2.0, blocked_users: []};
+  const baselineWithUsers = {...baseline, blocked_users: ['10001']};
+  const diffs = ui.buildDiffList(state, baseline, schema);
+  const byKey = Object.fromEntries(diffs.map(item => [item.key, item]));
+  assert.ok(byKey.trigger_rounds);
+  assert.equal(byKey.trigger_rounds.old, String(defaults.trigger_rounds));
+  assert.equal(byKey.trigger_rounds.new, '8');
+  assert.equal(byKey.debounce_slow_idle_seconds.new, '2');
+  // 名单型字段显示为“空名单”而非空串。
+  const diffs2 = ui.buildDiffList({...baselineWithUsers, blocked_users: []}, baselineWithUsers, schema);
+  assert.equal(diffs2.find(item => item.key === 'blocked_users').old, '10001');
+  assert.equal(diffs2.find(item => item.key === 'blocked_users').new, '空名单');
+});
+
+test('buildDiffList is empty when nothing is dirty', () => {
+  assert.deepEqual(ui.buildDiffList(copy(defaults), copy(defaults), schema), []);
+});
