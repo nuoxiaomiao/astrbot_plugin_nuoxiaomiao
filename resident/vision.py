@@ -18,6 +18,8 @@ from pathlib import Path
 
 from astrbot.api import logger
 
+from .autonomy import CURRENT_RUN
+
 # 单张图片描述失败后重试次数（不含超时吞掉的那次）。
 VISION_ATTEMPTS_PER_PROVIDER = 2
 # 默认提示词：仅在 AstrBot 核心没有配置 image_caption_prompt 时使用。
@@ -98,16 +100,39 @@ class Vision:
         if local and os.path.exists(local):
             source = local
         else:
+            # SSRF 护栏：只允许公网 http/https 图片地址（审查 H6/M1）。
+            if not self.plugin._is_safe_download_url(ref):
+                logger.debug("[糯小喵] 识图拒绝不安全图片地址: %s", ref[:120])
+                return
             try:
                 from astrbot.core.utils.media_utils import MediaResolver
 
                 if MediaResolver is None:  # pragma: no cover - 旧版核心兜底
                     return
-                source = await MediaResolver(ref, media_type="image").to_path()
+                source = await asyncio.wait_for(
+                    MediaResolver(ref, media_type="image").to_path(),
+                    timeout=getattr(
+                        self.plugin,
+                        "LOCALIZED_IMAGE_DOWNLOAD_TIMEOUT_SECONDS",
+                        30.0,
+                    ),
+                )
+            except asyncio.TimeoutError:
+                logger.debug("[糯小喵] 识图下载图片超时: %s", ref[:120])
+                return
             except Exception as exc:
                 logger.debug("[糯小喵] 识图下载图片失败: %s", exc)
                 return
         if not source or not os.path.exists(source):
+            return
+        # 大小护栏：避免超大文件占满磁盘。
+        try:
+            if os.path.getsize(source) > getattr(
+                self.plugin, "LOCALIZED_IMAGE_MAX_BYTES", 50 * 1024 * 1024
+            ):
+                logger.debug("[糯小喵] 识图图片过大，跳过: %s", ref[:120])
+                return
+        except OSError:
             return
         dest = await asyncio.to_thread(self._persist, source, ref)
         if dest is not None:
@@ -116,6 +141,10 @@ class Vision:
     def _persist(self, source: str, ref: str) -> Path | None:
         """把图片字节拷贝到留底目录，返回目标路径。"""
         try:
+            # 魔数校验：只有真图片才落盘（审查 H6）。
+            if not self.plugin._looks_like_image(source):
+                logger.debug("[糯小喵] 识图来源不是图片，跳过: %s", source)
+                return None
             target_dir = self.dir()
             target_dir.mkdir(parents=True, exist_ok=True)
             suffix = Path(source).suffix.lower()
@@ -124,7 +153,11 @@ class Vision:
             digest = hashlib.md5(ref.encode("utf-8")).hexdigest()[:10]
             stamp = time.strftime("%Y%m%d%H%M%S")
             pid = os.getpid() & 0xFFFF
-            dest = target_dir / f"img_{stamp}_{pid}_{digest}{suffix}"
+            # 同秒同源冲突时用随机后缀错开，降低覆盖概率（审查 M11）。
+            dest = (
+                target_dir
+                / f"img_{stamp}_{pid}_{digest}-{uuid.uuid4().hex[:6]}{suffix}"
+            )
             shutil.copy2(source, dest)
             return dest
         except Exception as exc:
@@ -228,6 +261,9 @@ class Vision:
         provider = await self.resolve_provider(umo)
         if provider is None:
             return ""
+        # 自主运行进行中时，识图调用同样计入本轮 token 预算（审查 H12）。
+        if CURRENT_RUN.get() is not None:
+            provider = self.service.autonomy.wrap_provider(provider)
         if not os.path.exists(image_path):
             return ""
         prompt = self._caption_prompt(umo)

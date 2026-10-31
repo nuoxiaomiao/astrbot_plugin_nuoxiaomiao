@@ -161,6 +161,8 @@ class ConfigApiTest(unittest.IsolatedAsyncioTestCase):
     async def call_api(self, plugin, method, body=None):
         app = Quart(__name__)
         async with app.test_request_context("/config", method="POST" if body is not None else "GET", json=body):
+            from quart import g
+            g.username = "admin"  # 模拟平台认证（审查 P0-1）
             result = await getattr(plugin, method)()
             response, status = result if isinstance(result, tuple) else (result, 200)
             return await response.get_json(), status

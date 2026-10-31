@@ -13,10 +13,17 @@ import time
 
 from astrbot.api import logger
 
+from .autonomy import CURRENT_RUN
+
 # 模型输出里夹带 JSON 时的最大扫描长度（防无限长回复拖慢解析）。
 TOPIC_PARSE_MAX_TEXT = 8000
-# 别名表：不认识的人用「甲乙丙…」代替，不暴露裸 ID。
-TOPIC_ALIASES = ("甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸")
+# 别名表：不认识的人用「甲乙丙…」代替，不暴露裸 ID。天干 + 地支 + 生肖
+# 共 34 个不同代号，远超常见会话的陌生人数；再多就退化成「匿名N」。
+TOPIC_ALIASES = (
+    "甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸",  # 天干
+    "子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥",  # 地支
+    "鼠", "牛", "虎", "兔", "龙", "蛇", "马", "羊", "猴", "鸡", "狗", "猪",  # 生肖
+)
 
 
 class Topic:
@@ -116,9 +123,13 @@ class Topic:
                 label = name
             else:
                 if sender_id not in alias_of:
-                    alias_of[sender_id] = TOPIC_ALIASES[
-                        len(alias_of) % len(TOPIC_ALIASES)
-                    ]
+                    if len(alias_of) >= len(TOPIC_ALIASES):
+                        # 代号用完不再回绕，改用匿名编号（审查 M12）。
+                        alias_of[sender_id] = f"匿名{len(alias_of) + 1}"
+                    else:
+                        alias_of[sender_id] = TOPIC_ALIASES[
+                            len(alias_of) % len(TOPIC_ALIASES)
+                        ]
                 label = alias_of[sender_id]
             text = str(row["text"] or "").replace("\n", " ").strip()
             if not text:
@@ -218,6 +229,9 @@ class Topic:
         if provider is None:
             logger.warning("[糯小喵] 话题概括跳过：没有可用模型")
             return False
+        # 自主运行进行中时，背景概括同样计入本轮 token 预算（审查 H12）。
+        if CURRENT_RUN.get() is not None:
+            provider = self.service.autonomy.wrap_provider(provider)
         try:
             resp = await asyncio.wait_for(
                 provider.text_chat(prompt=self._build_prompt(material)),

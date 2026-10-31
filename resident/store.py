@@ -240,11 +240,12 @@ class Store:
     def charge(self, run_id, day, limit):
         with self.transaction() as db:
             row = db.execute(
-                "SELECT charged FROM resident_runs WHERE id=?", (run_id,)
+                "SELECT charged,day FROM resident_runs WHERE id=?", (run_id,)
             ).fetchone()
             if not row:
                 raise ValueError("运行记录不存在")
-            if row[0]:
+            # 同一自然日不重复计次；跨天之后允许按新的一天再计一次（审查 H11）。
+            if row[0] and row[1] == day:
                 return
             used = db.execute(
                 "SELECT COUNT(*) FROM resident_runs WHERE day=? AND charged=1", (day,)
@@ -262,7 +263,7 @@ class Store:
             (day,),
         )[0]["used"]
         usage = self.rows(
-            "SELECT input_other+output AS tokens,unknown,input_cached FROM resident_daily_usage WHERE day=?",
+            "SELECT input_other+input_cached+output AS tokens,unknown,input_cached FROM resident_daily_usage WHERE day=?",
             (day,),
         )
         return {
@@ -508,3 +509,78 @@ class Store:
             except OSError:
                 pass
         return (removed_rows, removed_files, removed_desc)
+
+    def cleanup_runs(self, retention_days: int) -> dict[str, int]:
+        """按保留天数清理自主运行审计日志（审查 C2/C3）。
+
+        删除过期 resident_runs 及其关联的 actions / tool_requests / sends /
+        deferred，以及过期的 topic_segments 与每日用量统计。这些全是日志型
+        数据，删除不影响当前人设状态、未读信箱与识图留底。
+        """
+        if int(retention_days) <= 0:
+            retention_days = 30
+        now = time.time()
+        cutoff = now - int(retention_days) * 86400
+        removed = {
+            "runs": 0,
+            "actions": 0,
+            "tool_requests": 0,
+            "sends": 0,
+            "deferred": 0,
+            "topic_segments": 0,
+            "daily_usage": 0,
+        }
+        with self.transaction() as db:
+            old_run_ids = [
+                row[0]
+                for row in db.execute(
+                    "SELECT id FROM resident_runs WHERE started < ?",
+                    (cutoff,),
+                ).fetchall()
+            ]
+            if old_run_ids:
+                before = db.total_changes
+                db.executemany(
+                    "DELETE FROM resident_actions WHERE run_id=?",
+                    ((rid,) for rid in old_run_ids),
+                )
+                db.executemany(
+                    "DELETE FROM resident_tool_requests WHERE run_id=?",
+                    ((rid,) for rid in old_run_ids),
+                )
+                db.executemany(
+                    "DELETE FROM resident_sends WHERE run_id=?",
+                    ((rid,) for rid in old_run_ids),
+                )
+                db.executemany(
+                    "DELETE FROM resident_deferred WHERE run_id=?",
+                    ((rid,) for rid in old_run_ids),
+                )
+                removed["actions"] = db.total_changes - before
+                db.executemany(
+                    "DELETE FROM resident_runs WHERE id=?",
+                    ((rid,) for rid in old_run_ids),
+                )
+                removed["runs"] = len(old_run_ids)
+            # 孤儿行兜底：父 run 已被删除（例如崩溃期间）的行一并清掉。
+            removed["actions"] += db.execute(
+                "DELETE FROM resident_actions WHERE run_id NOT IN (SELECT id FROM resident_runs)"
+            ).rowcount
+            removed["tool_requests"] += db.execute(
+                "DELETE FROM resident_tool_requests WHERE run_id NOT IN (SELECT id FROM resident_runs)"
+            ).rowcount
+            removed["sends"] += db.execute(
+                "DELETE FROM resident_sends WHERE run_id NOT IN (SELECT id FROM resident_runs)"
+            ).rowcount
+            removed["deferred"] += db.execute(
+                "DELETE FROM resident_deferred WHERE run_id NOT IN (SELECT id FROM resident_runs)"
+            ).rowcount
+            removed["topic_segments"] = db.execute(
+                "DELETE FROM resident_topic_segments WHERE start_ts<?",
+                (cutoff,),
+            ).rowcount
+            removed["daily_usage"] = db.execute(
+                "DELETE FROM resident_daily_usage WHERE day<?",
+                (time.strftime("%Y-%m-%d", time.localtime(cutoff)),),
+            ).rowcount
+        return removed

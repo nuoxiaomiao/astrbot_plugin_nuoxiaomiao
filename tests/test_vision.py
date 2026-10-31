@@ -13,7 +13,7 @@ from test_plugin_logic import make_plugin, FakeContext, FakeEvent
 from resident_fixtures import ScriptedProvider
 
 
-def image_file(directory, name="photo.png", body=b"fake png bytes"):
+def image_file(directory, name="photo.png", body=b"\x89PNG\x0d\x0a\x1a\x0a\x00\x00\x00\x0dIHDR"):
     path = Path(directory) / name
     path.write_bytes(body)
     return str(path)

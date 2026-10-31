@@ -327,7 +327,8 @@ class ResidentTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(BudgetExceeded):
             await provider.text_chat()
         self.assertEqual(
-            p.resident.store.budget(datetime.now().strftime("%Y-%m-%d"))["tokens"], 11
+            p.resident.store.budget(datetime.now().strftime("%Y-%m-%d"))["tokens"],
+            1011,  # 8 input_other + 1000 input_cached + 3 output（审查 M13 计缓存）
         )
         self.assertEqual(
             p.resident.store.budget(datetime.now().strftime("%Y-%m-%d"))["used"], 1

@@ -72,6 +72,9 @@ class Master:
         task = asyncio.current_task()
         if self._brain_owner is task:
             return False
+        # 没有可用的主脑会话时共享记忆并未真正绑定，不必排队拿锁（审查 C5）。
+        if not await self.resolve_master_umo():
+            return False
         await self._brain_lock.acquire()
         self._brain_owner = task
         return True

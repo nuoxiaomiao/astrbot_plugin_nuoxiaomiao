@@ -121,7 +121,11 @@ class MasterTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(bound)
 
     async def test_brain_lock_is_reentrant_and_releases(self):
-        p = self.make(shared_memory_enabled=True)
+        # 需要先绑定主脑：未绑定时 acquire_brain 直接放行不持锁（审查 C5）。
+        p = self.make(
+            shared_memory_enabled=True,
+            master_umo="aiocqhttp:GroupMessage:20001",
+        )
         first = await p.resident.master.acquire_brain()
         self.assertTrue(first)
         second = await p.resident.master.acquire_brain()

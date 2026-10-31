@@ -899,7 +899,7 @@ class MergeImageLocalizationTest(unittest.IsolatedAsyncioTestCase):
             # 模拟 core 下载到临时目录的图（随时可能被清理）。
             with tempfile.TemporaryDirectory() as tmp_dir:
                 src = Path(tmp_dir) / "temp_image.png"
-                src.write_bytes(b"local png")
+                src.write_bytes(b"\x89PNG temp image bytes")
                 local_path = str(src)
 
                 called = []
@@ -962,7 +962,7 @@ class MergeImageLocalizationTest(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as localize_dir:
             plugin = self._make_plugin(localize_dir)
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                tmp.write(b"downloaded png")
+                tmp.write(b"\x89PNG downloaded png")
                 downloaded_path = tmp.name
 
             called = []
@@ -971,8 +971,8 @@ class MergeImageLocalizationTest(unittest.IsolatedAsyncioTestCase):
                 called.append(True)
                 return downloaded_path
 
-            # 指向一个不存在的本地路径，应回退到 MediaResolver 下载。
-            image = Image(file="/nonexistent/path/ghost.png")
+            # 指向一个不存在的本地路径，但 ref 是 URL → 回退到 MediaResolver 下载。
+            image = Image(file="https://example.test/missing.png")
             event = FakeEvent(message_str="", components=[image])
 
             with patch("main.MediaResolver.to_path", new=fake_to_path):
@@ -1082,16 +1082,20 @@ class MergeImageLocalizationTest(unittest.IsolatedAsyncioTestCase):
             key = plugin._merge_key(event.unified_msg_origin, "10001")
             buffered = plugin._merges[key].component_parts[0][0]
             persisted_path = buffered.path
-            # 本地化后文件存在、被追踪。
+            # 本地化后文件存在、被追踪（按 (merge_key, epoch) 记账）。
             self.assertTrue(os.path.exists(persisted_path))
-            self.assertIn(key, plugin._localized_files)
-            self.assertEqual(len(plugin._localized_files[key]), 1)
+            epoch = plugin._merges[key].epoch
+            composite = (key, epoch)
+            self.assertIn(composite, plugin._localized_files)
+            self.assertEqual(len(plugin._localized_files[composite]), 1)
 
             # on_llm_response 后文件应被清理、追踪记录应清空。
+            # 生产里 epoch 由合成事件携带，这里直接模拟给事件打上代次。
+            event.set_extra("nuoxiaomiao_merge_epoch", epoch)
             response = type("R", (), {"completion_text": "ok"})()
             await plugin.on_llm_response(event, response)
             self.assertFalse(os.path.exists(persisted_path))
-            self.assertNotIn(key, plugin._localized_files)
+            self.assertNotIn(composite, plugin._localized_files)
 
             os.unlink(downloaded_path)
             await plugin.terminate()
@@ -1421,7 +1425,7 @@ class DynamicDebounceTest(unittest.IsolatedAsyncioTestCase):
         plugin = self._plugin(merge_idle_seconds=30, merge_max_total_seconds=60)
         downloaded = []
 
-        async def fake_localize(event, components, key=""):
+        async def fake_localize(event, components, key="", epoch=0):
             downloaded.append(key)
             return components
 
@@ -1442,7 +1446,7 @@ class DynamicDebounceTest(unittest.IsolatedAsyncioTestCase):
         plugin = self._plugin(merge_idle_seconds=30, merge_max_total_seconds=60)
         downloaded = []
 
-        async def fake_localize(event, components, key=""):
+        async def fake_localize(event, components, key="", epoch=0):
             downloaded.append(key)
             return components
 
@@ -2967,7 +2971,7 @@ class ProactiveFireTest(unittest.IsolatedAsyncioTestCase):
         context = FakeContext(admins=["10001"], provider=provider)
         plugin = make_proactive_plugin(context=context)
         row = self._row(plugin)
-        lock = plugin._get_proactive_target_lock("private", "10001")
+        lock = await plugin._get_proactive_target_lock("private", "10001")
         await lock.acquire()
 
         task = asyncio.ensure_future(plugin._fire_proactive(row))

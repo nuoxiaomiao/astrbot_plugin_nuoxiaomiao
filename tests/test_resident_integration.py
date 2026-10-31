@@ -277,7 +277,9 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
         store.charge(rid, "2000-01-01", 15)
         store.usage(rid, (3, 100, 4), day="2000-01-02")
         self.assertEqual(store.budget("2000-01-01")["tokens"], 0)
-        self.assertEqual(store.budget("2000-01-02")["tokens"], 7)
+        self.assertEqual(
+            store.budget("2000-01-02")["tokens"], 107  # 3+100+4，含缓存（审查 M13）
+        )
         self.assertEqual(store.budget("2000-01-02")["input_cached"], 100)
 
     async def test_deferred_send_keeps_budget_after_restart_without_context_leak(self):
@@ -333,6 +335,8 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 method="POST",
                 json={"umo": FakeEvent().unified_msg_origin, **body},
             ):
+                from quart import g
+                g.username = "admin"  # 模拟平台认证（审查 P0-1）
                 return (await (await service.mutate()).get_json())["data"]
 
         saved = await post(

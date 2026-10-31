@@ -149,7 +149,24 @@ class ResidentServices:
             ),
         }
 
+    def _auth_ok(self) -> bool:
+        """插件级纵深防御：要求 AstrBot 平台已把认证用户名注入请求上下文。
+
+        AstrBot 4.29 的插件扩展路由本身要求 JWT，但 handler 内再做一次
+        显式校验，防止未来平台把插件 API 暴露在未鉴权路径（审查 C1/H2）。
+        """
+        try:
+            username = self.plugin._webapi_username()
+        except AttributeError:
+            return True  # 旧版插件对象没有该 helper 时保持平台默认行为
+        return bool(username)
+
+    def _auth_denied(self):
+        return jsonify({"status": "error", "message": "未登录或登录已过期"}), 401
+
     async def get(self):
+        if not self._auth_ok():
+            return self._auth_denied()
         try:
             data = await self.snapshot(
                 str(request.args.get("umo", "")),
@@ -160,6 +177,8 @@ class ResidentServices:
             return jsonify({"status": "ok", "data": {"operation_error": str(exc)}})
 
     async def mutate(self):
+        if not self._auth_ok():
+            return self._auth_denied()
         try:
             body = await request.get_json()
             if not isinstance(body, dict):

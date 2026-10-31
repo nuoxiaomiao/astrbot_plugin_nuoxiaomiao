@@ -58,12 +58,17 @@ class BudgetProvider:
                 self.run, kwargs["func_tool"]
             )
         response = None
+        invoked = False
         try:
+            invoked = True
             response = await self.provider.text_chat(*args, **kwargs)
             self.autonomy.service.store.tool_requests(self.run.id, response)
             return response
         finally:
-            self.autonomy.record_usage(self.run, getattr(response, "usage", None))
+            # before_request 被 BudgetExceeded 短路时模型根本没被调用，
+            # 不要记 usage_unknown（审查 H10）。
+            if invoked:
+                self.autonomy.record_usage(self.run, getattr(response, "usage", None))
 
     async def text_chat_stream(self, *args, **kwargs):
         try:
@@ -76,13 +81,18 @@ class BudgetProvider:
                 self.run, kwargs["func_tool"]
             )
         usage = None
+        invoked = False
         try:
+            invoked = True
             async for response in self.provider.text_chat_stream(*args, **kwargs):
                 if getattr(response, "usage", None) is not None:
                     usage = response.usage
                 yield response
         finally:
-            self.autonomy.record_usage(self.run, usage)
+            # before_request 被 BudgetExceeded 短路时模型根本没被调用，
+            # 不要记 usage_unknown（审查 H10）。
+            if invoked:
+                self.autonomy.record_usage(self.run, usage)
 
 
 class ScopedExecutor:
@@ -102,7 +112,10 @@ class ScopedExecutor:
         raw = getattr(self.run.runner, "_skill_like_raw_tool_set", None) or current
         permitted = (
             name in (self.run.effective or set())
-            and any(t is tool for t in getattr(raw, "tools", []) or [])
+            and any(
+                getattr(t, "name", "") == getattr(tool, "name", "")
+                for t in getattr(raw, "tools", []) or []
+            )
             and getattr(tool, "active", True)
             and not is_dispatcher(tool)
         )
@@ -380,30 +393,37 @@ class Autonomy:
         for row in self.service.store.rows(
             "SELECT id,umo FROM resident_runs WHERE status='pending' AND charged=0 ORDER BY id"
         ):
-            platform, typ, target = row["umo"].split(":", 2)
-            kind = "group" if typ == "GroupMessage" else "private"
-            allowed = (
-                p._proactive_group_allowed(target, "")
-                if kind == "group"
-                else p._proactive_person_allowed(target)
-            )
-            if allowed:
-                picked = {
-                    "umo": row["umo"],
-                    "platform_id": platform,
-                    "kind": kind,
-                    "id": target,
-                }
-                pending_id = row["id"]
-                with self.service.store.transaction() as db:
-                    db.execute(
-                        "UPDATE resident_runs SET status='preparing' WHERE id=?",
-                        (pending_id,),
-                    )
-                break
-            self.service.store.finish(
-                row["id"], "skipped", "skipped", "恢复时目标已不在允许范围"
-            )
+            try:
+                platform, typ, target = row["umo"].split(":", 2)
+                kind = "group" if typ == "GroupMessage" else "private"
+                allowed = (
+                    p._proactive_group_allowed(target, "")
+                    if kind == "group"
+                    else p._proactive_person_allowed(target)
+                )
+                if allowed:
+                    picked = {
+                        "umo": row["umo"],
+                        "platform_id": platform,
+                        "kind": kind,
+                        "id": target,
+                    }
+                    pending_id = row["id"]
+                    with self.service.store.transaction() as db:
+                        db.execute(
+                            "UPDATE resident_runs SET status='preparing' WHERE id=?",
+                            (pending_id,),
+                        )
+                    break
+                self.service.store.finish(
+                    row["id"], "skipped", "skipped", "恢复时目标已不在允许范围"
+                )
+            except (ValueError, TypeError):
+                # umo 格式损坏的挂起行不能中断整个恢复循环，跳过继续（审查 H9）。
+                core.logger.debug(
+                    "[糯小喵] 恢复挂起运行失败：umo=%r，跳过该行", row["umo"]
+                )
+                continue
         if picked is None:
             picked = await p._pick_self_wake_session()
         if not admins or picked is None:
@@ -443,7 +463,10 @@ class Autonomy:
                 else core._MessageType.FRIEND_MESSAGE
             )
         event = core._CronMessageEvent(**kwargs)
-        event.role = "admin"
+        # 不要伪装成管理员：插件自己的权限检查靠 SELF_WAKE_EVENT_EXTRA 标记
+        # 与 sender=admins[0]（落在 _admin_ids() 内）判定，角色保持普通成员可
+        # 避免其他插件/宿主把自主轮次当作真人管理员对待（审查 C4/H1）。
+        event.role = "member"
         try:
             plugin_set = p.context.get_config(umo=event.unified_msg_origin).get(
                 "plugin_set", ["*"]
