@@ -1,6 +1,6 @@
-/* 糯小喵 · 自主运行与状态面板（重写版）。
- * 保留与宿主一致的桥接契约（win.AstrBotPluginPage.apiGet/apiPost），
- * 样式统一到新的设计系统（.card/.btn/.badge/.field 等）。
+/* 糯小喵 · 自主运行与状态面板（从零重做，极简样式）。
+ * 保持与宿主一致的桥接契约（win.AstrBotPluginPage.apiGet/apiPost）。
+ * 全部文本用 textContent 写入，防止 XSS。
  */
 (function (root, factory) {
   'use strict';
@@ -28,13 +28,13 @@
       return n;
     }
     function button(text, fn) {
-      var n = node('button', text, 'btn quiet');
+      var n = node('button', text, 'btn');
       n.type = 'button';
       n.addEventListener('click', fn);
       return n;
     }
     function input(title, value, textarea) {
-      var label = node('label', title, 'field field-inline');
+      var label = node('label', title, 'field-inline');
       var el = node(textarea ? 'textarea' : 'input');
       el.value = value == null ? '' : value;
       el.setAttribute('aria-label', title);
@@ -43,8 +43,8 @@
       return { label: label, el: el };
     }
     function card(title) {
-      var el = node('section', undefined, 'card resident-card');
-      el.appendChild(node('h2', title));
+      var el = node('section', undefined, 'resident-card');
+      el.appendChild(node('h3', title));
       root.appendChild(el);
       return el;
     }
@@ -91,15 +91,14 @@
       head.appendChild(picker);
       head.appendChild(button('刷新运行数据', load));
       if (!data.sessions.length) head.appendChild(node('p', '还没有可查看的会话记录。', 'muted'));
-      if (data.migration) head.appendChild(node('p', data.migration, 'notice'));
+      if (data.migration) head.appendChild(node('p', data.migration, 'muted'));
       var budget = data.budget || {};
       head.appendChild(node('p', '今日自醒 ' + (budget.used || 0) + ' 次 · 未缓存输入与输出 ' + (budget.tokens || 0) + ' token' + (budget.unknown ? ' · 部分用量未知' : ''), 'muted'));
 
       var capabilities = card('能力联动');
       (data.capabilities || []).forEach(function (c) {
         var item = node('div', undefined, 'resident-capability');
-        var stateText = labels[c.state] || c.state;
-        item.appendChild(node('span', c.title + ' · ' + stateText, 'badge badge-' + (c.state === 'ready' ? 'ok' : c.state === 'unavailable' || c.state === 'out_of_scope' ? 'off' : 'warn')));
+        item.appendChild(node('span', c.title + ' · ' + (labels[c.state] || c.state), 'badge badge-' + (c.state === 'ready' ? 'ok' : c.state === 'unavailable' || c.state === 'out_of_scope' ? 'off' : 'warn')));
         item.appendChild(node('p', c.source + '：' + c.reason, 'muted'));
         item.appendChild(node('small', c.tools.join('、'), 'muted'));
         if (c.url) {

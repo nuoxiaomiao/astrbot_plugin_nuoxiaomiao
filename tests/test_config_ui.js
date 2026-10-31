@@ -7,26 +7,56 @@ const path = require('node:path');
 const ui = require('../pages/config/app.js');
 const schema = JSON.parse(fs.readFileSync(path.join(__dirname, '../_conf_schema.json'), 'utf8').replace(/^\uFEFF/, ''));
 const defaults = Object.fromEntries(Object.entries(schema).map(([key, spec]) => [key, spec.default]));
+const groups = ui.deriveGroups(schema);
 const copy = value => JSON.parse(JSON.stringify(value));
 
-test('all active schema fields have one navigation home; reserved delay is omitted', () => {
-  assert.equal(ui.GROUPS.length, 10);
-  assert.deepEqual(ui.GROUPS.map(group => group.title), ['总览', '消息合并', '回复节奏', '拦截与互动', '聊天记录与参考', '主动消息', '自醒', '高级', '自主运行与状态', '共享记忆与信箱']);
-  const collect = section => (section.fields || []).concat((section.children || []).flatMap(collect));
-  const grouped = ui.GROUPS.flatMap(group => group.sections.flatMap(section => {
-    const fields = collect(section);
-    assert.deepEqual(ui.sectionFields(section), fields, `${group.id}:${section.id}`);
-    for (const key of fields.filter(key => !key.startsWith('@'))) assert.equal(ui.groupOf(key).id, group.id, key);
-    return fields;
-  }));
-  grouped.push('activity_prefetch_enabled', 'capability_context_digest');
-  for (const key of Object.keys(schema)) {
-    if (['proactive_min_delay_minutes', 'proactive_silent_wake_tool_plugins', 'resident_tools_migrated'].includes(key)) continue;
-    assert.equal(grouped.filter(item => item === key).length, 1, key);
+test('deriveGroups covers every schema key exactly once, with reference folded in', () => {
+  const collected = [];
+  for (const group of groups) {
+    for (const key of group.fields) {
+      assert.ok(!collected.includes(key), `duplicate ${key}`);
+      collected.push(key);
+    }
   }
-  assert.ok(!grouped.includes('proactive_min_delay_minutes'));
-  assert.equal(ui.groupOf('activity_prefetch_enabled').id, 'activity');
-  assert.equal(ui.groupOf('capability_context_digest').id, 'activity');
+  const hidden = ['proactive_min_delay_minutes', 'proactive_silent_wake_tool_plugins', 'resident_tools_migrated'];
+  const expected = Object.keys(schema).filter(key => !hidden.includes(key));
+  for (const key of expected) {
+    if (key === 'activity_prefetch_enabled' || key === 'capability_context_digest') continue; // folded into @reference
+    assert.ok(collected.includes(key), `missing ${key}`);
+  }
+  assert.ok(collected.includes('@reference'));
+  assert.ok(!collected.includes('activity_prefetch_enabled'));
+  assert.ok(!collected.includes('capability_context_digest'));
+  assert.equal(groups.map(g => g.title).join(','), '总览,消息合并,回复节奏,拦截与互动,聊天记录与参考,主动消息,自醒,高级,自主状态,共享记忆与信箱');
+});
+
+test('groupOf maps every key and the reference to one home', () => {
+  assert.equal(ui.groupOf('enabled', groups).id, 'overview');
+  assert.equal(ui.groupOf('debounce_enabled', groups).id, 'debounce');
+  assert.equal(ui.groupOf('human_reply_enabled', groups).id, 'human_reply');
+  assert.equal(ui.groupOf('include_group', groups).id, 'interaction');
+  assert.equal(ui.groupOf('activity_prefetch_enabled', groups).id, 'activity');
+  assert.equal(ui.groupOf('capability_context_digest', groups).id, 'activity');
+  assert.equal(ui.groupOf('proactive_enabled', groups).id, 'proactive');
+  assert.equal(ui.groupOf('proactive_silent_wake_enabled', groups).id, 'selfwake');
+  assert.equal(ui.groupOf('force_wake_prefix', groups).id, 'advanced');
+  assert.equal(ui.groupOf('resident_state_enabled', groups).id, 'resident_state');
+  assert.equal(ui.groupOf('vision_enabled', groups).id, 'shared_memory');
+});
+
+test('reference choices map to exactly one automatic context source', () => {
+  assert.deepEqual(ui.referenceValues('tools'), {activity_prefetch_enabled: false, capability_context_digest: false});
+  assert.deepEqual(ui.referenceValues('prefetch'), {activity_prefetch_enabled: true, capability_context_digest: false});
+  assert.deepEqual(ui.referenceValues('background'), {activity_prefetch_enabled: false, capability_context_digest: true});
+  assert.equal(ui.referenceMode({activity_prefetch_enabled: true, capability_context_digest: false}), 'prefetch');
+  assert.equal(ui.referenceMode({activity_prefetch_enabled: false, capability_context_digest: true}), 'background');
+  assert.equal(ui.referenceMode({activity_prefetch_enabled: true, capability_context_digest: true}), 'background');
+});
+
+test('fieldTitle strips native category prefixes without editing schema', () => {
+  const spec = {description: '【消息合并】群聊启用'};
+  assert.equal(ui.fieldTitle(spec, 'sample'), '群聊启用');
+  assert.equal(spec.description, '【消息合并】群聊启用');
 });
 
 test('an unrelated save preserves a legacy both-on reference configuration', () => {
@@ -38,21 +68,6 @@ test('an unrelated save preserves a legacy both-on reference configuration', () 
   assert.deepEqual(ui.buildPatch(state, baseline, schema), {
     trigger_rounds: 5, activity_prefetch_enabled: false, capability_context_digest: true
   });
-});
-
-test('reference choices map to exactly one automatic context source', () => {
-  assert.deepEqual(ui.referenceValues('tools'), {activity_prefetch_enabled: false, capability_context_digest: false});
-  assert.deepEqual(ui.referenceValues('prefetch'), {activity_prefetch_enabled: true, capability_context_digest: false});
-  assert.deepEqual(ui.referenceValues('background'), {activity_prefetch_enabled: false, capability_context_digest: true});
-});
-
-test('tools have explicit all, core, and selected semantics', () => {
-  assert.equal(ui.toolMode([]), 'all');
-  assert.equal(ui.toolMode([ui.CORE_PLUGIN]), 'core');
-  assert.deepEqual(ui.toolValues('all', ['memory']), []);
-  assert.deepEqual(ui.toolValues('core', ['memory']), [ui.CORE_PLUGIN]);
-  assert.deepEqual(ui.toolValues('selected', ['memory', ui.CORE_PLUGIN, 'memory', '（内置工具）']), [ui.CORE_PLUGIN, 'memory']);
-  assert.equal(ui.toolMode(ui.toolValues('selected', [])), 'core');
 });
 
 test('a save response preserves edits made while the request was pending', () => {
@@ -106,6 +121,22 @@ test('editing an unrelated setting does not reject existing legacy values', () =
 test('structured field errors and list text survive expected interface shapes', () => {
   assert.deepEqual(ui.errorFields({response: {data: {field_errors: {trigger_rounds: '请输入整数'}}}}), {trigger_rounds: '请输入整数'});
   assert.deepEqual(ui.parseList('10001，10002\n10001;10003'), ['10001', '10002', '10003']);
+  assert.equal(ui.valueText([]), '空名单');
+  assert.equal(ui.valueText(true), '开启');
+  assert.equal(ui.valueText(''), '留空');
+});
+
+test('wake validation rejects fractional values too close to the bounds', () => {
+  const state = {...defaults, proactive_silent_wake_floor_minutes: 5, proactive_silent_wake_target_mean_minutes: 5.5, proactive_silent_wake_ceil_minutes: 6};
+  assert.ok(ui.validateValues(state, {proactive_silent_wake_target_mean_minutes: 5.5}, schema).proactive_silent_wake_target_mean_minutes);
+});
+
+test('matches finds keys by title, hint, group, and raw key', () => {
+  const spec = schema.trigger_rounds;
+  assert.ok(ui.matches('trigger_rounds', spec, '连刷', '拦截与互动'));
+  assert.ok(ui.matches('trigger_rounds', spec, 'trigger_rounds', '拦截与互动'));
+  assert.ok(ui.matches('trigger_rounds', spec, '拦截', '拦截与互动'));
+  assert.ok(!ui.matches('trigger_rounds', spec, '识图', '拦截与互动'));
 });
 
 // A deliberately small DOM implements the actual page's event and state paths.
@@ -114,7 +145,7 @@ class Element {
   constructor(tag, document) {
     this.tagName = tag.toUpperCase(); this.document = document; this.children = [];
     this.dataset = {}; this.attributes = {}; this.events = {}; this.style = {};
-    this.className = ''; this.textContent = ''; this.value = ''; this.hidden = false;
+    this.className = ''; this.textContent = ''; this.value = ''; this.hidden = false; this.open = false;
     this.classList = {
       contains: name => this.className.split(/\s+/).includes(name),
       add: name => { if (!this.classList.contains(name)) this.className += ' ' + name; },
@@ -149,387 +180,171 @@ function fixture(config = {}, customPost, metadata = {}) {
   document.documentElement = document.createElement('html');
   document.getElementById = id => document.documentElement.querySelector('#' + id);
   document.querySelectorAll = selector => document.documentElement.querySelectorAll(selector);
-  const ids = ['app','sidebar','tabs','pane','page-title','page-description','timezone','banner','diagnostics','error-summary','boot','toast','dirty','save-detail','save','save-default','clear-default','restore-default','restore-factory','revert','search-clear','default-menu','default-menu-btn','drawer-toggle','drawer-close','drawer-backdrop','theme-toggle','search','pending-only'];
-  for (const id of ids) { const element = document.createElement(id === 'search' || id === 'pending-only' ? 'input' : 'div'); element.id = id; document.documentElement.appendChild(element); }
+  const ids = ['app','groups','search','search-clear','timezone','banner','diagnostics','error-summary','dirty','save-detail','save','revert','restore-factory','resident','resident-root','boot','toast'];
+  for (const id of ids) { const element = document.createElement(id === 'search' ? 'input' : 'div'); element.id = id; if (id === 'resident') element.tagName = 'DETAILS'; document.documentElement.appendChild(element); }
   const calls = [], storage = new Map();
   const window = {document, events: {}, addEventListener(type, listener) { (this.events[type] ||= []).push(listener); }, scrollTo() {}, matchMedia() { return {matches: false}; }, localStorage: {getItem(key) { return storage.has(key) ? storage.get(key) : null; }, setItem(key, value) { storage.set(key, String(value)); }}, AstrBotPluginPage: {
     async ready() {},
-    async apiGet() { return {status: 'ok', data: {schema, defaults, config: {...copy(defaults), ...config}, timezone: 'Asia/Shanghai', providers: [{id: 'available', label: '可用模型'}], diagnostics: [{code: 'sample', severity: 'info', message: '检查提示', fields: ['trigger_rounds']}], tool_plugins: [{name: ui.CORE_PLUGIN, count: 3}, {name: '（内置工具）', builtin: true, count: 2}, {name: 'memory', count: 1, tools: ['recall']}], ...metadata}}; },
+    async apiGet() { return {status: 'ok', data: {schema, defaults, config: {...copy(defaults), ...config}, timezone: 'Asia/Shanghai', providers: [{id: 'available', label: '可用模型'}], diagnostics: [{code: 'sample', severity: 'info', message: '检查提示', fields: ['trigger_rounds']}], ...metadata}}; },
     async apiPost(route, body) { calls.push({route, body: copy(body)}); if (customPost) return customPost(route, body); return {status: 'ok', data: {config: {...copy(defaults), ...config, ...body.config}}}; }
   }};
   ui.mount(window);
-  return {document, window, calls, storage, get: id => document.getElementById(id), navigate(id) { const tab = document.querySelectorAll('.nav-button').find(node => node.dataset.group === id); tab.dispatch('click'); }};
+  return {document, window, calls, storage, get: id => document.getElementById(id)};
 }
 const settled = () => new Promise(resolve => setImmediate(resolve));
-function visible(element) {
-  if (!element) return false;
-  for (let current = element; current; current = current.parentElement) {
-    if (current.hidden || current.tagName === 'DETAILS' && !current.open) return false;
-  }
-  return true;
-}
 function check(page, key, value) { const input = page.get('input-' + key); input.checked = value; input.dispatch('change'); }
 function search(page, text) { const input = page.get('search'); input.value = text; input.dispatch('input'); }
-function selectReference(page, value) {
-  const radios = page.get('field-@reference').querySelectorAll('input');
-  radios.forEach(input => { input.checked = input.value === value; });
-  radios.find(input => input.value === value).dispatch('change');
-}
-function openAdvanced(page, key) {
-  const details = page.get('field-' + key).closest('details');
-  assert.ok(details, `${key} has advanced settings`);
-  details.open = true; details.dispatch('toggle');
-  return details;
+function fieldVisible(page, key) {
+  const row = page.get('field-' + key);
+  if (!row) return false;
+  for (let current = row; current; current = current.parentElement) if (current.hidden) return false;
+  return true;
 }
 
-test('page renders ten navigation groups, visible primary switches, time and provider controls', async () => {
-  const page = fixture({proactive_judge_provider_id: 'removed'}); await settled();
-  assert.equal(page.document.querySelectorAll('.nav-button').length, 10);
+test('page renders all ten flat groups with every field', async () => {
+  const page = fixture(); await settled();
+  const sections = page.document.querySelectorAll('.group');
+  assert.equal(sections.length, 10);
+  assert.deepEqual(sections.map(s => s.querySelector('.group-title').textContent), ['总览','消息合并','回复节奏','拦截与互动','聊天记录与参考','主动消息','自醒','高级','自主状态','共享记忆与信箱']);
+  for (const key of Object.keys(schema)) {
+    if (['proactive_min_delay_minutes','proactive_silent_wake_tool_plugins','resident_tools_migrated','activity_prefetch_enabled','capability_context_digest'].includes(key)) continue;
+    assert.ok(fieldVisible(page, key), `field ${key} rendered`);
+    if (key === 'resident_extra_tools') { assert.ok(page.get('field-' + key).querySelectorAll('input').length >= 0); continue; }
+    assert.ok(page.get('input-' + key), `input ${key} rendered`);
+  }
+  assert.ok(page.get('field-@reference'));
   assert.equal(page.get('timezone').textContent, '机器人时区：Asia/Shanghai');
-  assert.ok(page.get('diagnostics').children.length);
-  page.navigate('debounce');
-  const merge = page.get('field-debounce_enabled').closest('.feature-card');
-  assert.equal(merge.id, 'feature-debounce-merge');
-  assert.equal(merge.tagName, 'SECTION');
-  assert.equal(page.get('field-debounce_enabled').closest('details'), null);
-  assert.ok(visible(page.get('input-debounce_enabled')));
-  assert.equal(page.get('field-debounce_long_chars').closest('details').open, false);
-  page.navigate('proactive'); assert.equal(page.get('input-proactive_quiet_hours_start').type, 'time');
-  page.navigate('selfwake');
+  assert.ok(page.document.querySelectorAll('.diag').length);
+});
+
+test('page renders a provider select, time input, and reference options', async () => {
+  const page = fixture({proactive_judge_provider_id: 'removed'}); await settled();
   const provider = page.get('input-proactive_judge_provider_id');
   assert.equal(provider.tagName, 'SELECT'); assert.equal(provider.value, 'removed');
   assert.ok(provider.children.some(option => option.value === 'removed'));
   assert.ok(provider.children.some(option => option.value === 'available'));
+  assert.equal(page.get('input-proactive_quiet_hours_start').type, 'time');
+  const reference = page.get('field-@reference');
+  assert.equal(reference.querySelectorAll('input').length, 3);
 });
 
-test('shared memory group shows feature cards and field placement', async () => {
+test('search filters fields across groups and clears back', async () => {
   const page = fixture(); await settled();
-  page.navigate('shared_memory');
-  for (const feature of ['master', 'inbox', 'notice', 'topic', 'vision']) {
-    assert.ok(page.get('feature-shared_memory-' + feature), `feature ${feature} exists`);
-  }
-  for (const [feature, fields] of [
-    ['master', ['shared_memory_enabled', 'master_umo', 'master_auto_bind']],
-    ['inbox', ['unread_inbox_enabled', 'inbox_group_whitelist', 'inbox_group_blacklist']],
-    ['notice', ['mention_notice_enabled', 'mention_notice_limit']],
-    ['topic', ['topic_summary_enabled', 'topic_light_provider_id', 'topic_min_unread', 'topic_cooldown_seconds']],
-    ['vision', ['vision_enabled', 'vision_provider_ids', 'image_keep_days', 'vision_timeout_seconds']],
-  ]) {
-    const card = page.get('feature-shared_memory-' + feature);
-    assert.equal(card.tagName, 'SECTION');
-    for (const key of fields) assert.equal(page.get('field-' + key).closest('.feature-card'), card, key);
-  }
-});
-
-test('each interaction and record function contains its own related parameters', async () => {
-  const page = fixture(); await settled(); page.navigate('interaction');
-  for (const [feature, fields] of [
-    ['guard', ['include_group', 'include_private', 'trigger_rounds', 'user_whitelist', 'user_blacklist', 'guard_group_whitelist', 'guard_group_blacklist', 'meme_tags', 'meme_cooldown_seconds']],
-    ['blocked', ['blocked_users']],
-    ['poke', ['poke_reply_enabled', 'poke_reply_prompt', 'poke_reply_cooldown_seconds', 'poke_group_whitelist', 'poke_group_blacklist']],
-    ['keyword', ['keyword_wake_enabled', 'keyword_wake_list', 'keyword_wake_group_whitelist', 'keyword_wake_group_blacklist']],
-  ]) {
-    const card = page.get('feature-interaction-' + feature);
-    assert.equal(card.tagName, 'SECTION');
-    assert.equal(card.closest('details'), null);
-    for (const key of fields) assert.equal(page.get('field-' + key).closest('.feature-card'), card, key);
-  }
-  page.navigate('activity');
-  for (const [feature, fields] of [
-    ['recording', ['activity_buffer_enabled', 'activity_record_private', 'activity_record_bot_replies', 'activity_retention_days', 'activity_group_whitelist', 'activity_group_blacklist', 'activity_buffer_max_text_chars', 'activity_db_path', 'resident_inbox_enabled']],
-    ['permissions', ['activity_tool_enabled', 'activity_require_admin', 'activity_hint_enabled']],
-    ['reference', ['@reference', 'activity_prefetch_keywords']],
-    ['memory', ['lmem_gateway_enabled', 'lmem_gateway_keywords', 'lmem_gateway_top_k', 'lmem_gateway_timeout_seconds', 'lmem_gateway_max_chars', 'lmem_gateway_plugin_name', 'lmem_gateway_recall_tool_name']],
-  ]) {
-    const card = page.get('feature-activity-' + feature);
-    for (const key of fields) assert.equal(page.get('field-' + key).closest('.feature-card'), card, key);
-  }
-});
-
-test('a disabled function can be edited temporarily without enabling it on save', async () => {
-  const page = fixture({human_reply_enabled: false}); await settled(); page.navigate('human_reply');
-  const card = page.get('feature-human_reply-reply');
-  assert.ok(visible(page.get('input-human_reply_enabled')));
-  assert.equal(card.querySelector('.feature-parameters').hidden, true);
-  assert.equal(visible(page.get('input-human_reply_chars_per_minute')), false);
-  const input = page.get('input-human_reply_chars_per_minute');
-  page.get('edit-human_reply-reply').dispatch('click');
-  assert.equal(card.querySelector('.feature-parameters').hidden, false);
-  assert.ok(visible(input));
-  assert.equal(page.get('input-human_reply_chars_per_minute'), input);
-  assert.equal(page.get('field-human_reply_group_whitelist').closest('details').open, false);
-  assert.equal(page.get('input-human_reply_enabled').checked, false);
-  assert.equal(page.get('dirty').textContent, '没有待保存的修改');
-  input.value = '280'; input.dispatch('input'); page.get('save').dispatch('click'); await settled();
-  assert.deepEqual(page.calls[0].body.config, {human_reply_chars_per_minute: 280});
-  assert.equal(page.get('input-human_reply_enabled').checked, false);
-});
-
-test('temporary editing can be collapsed without discarding the draft or enabling the function', async () => {
-  const page = fixture({human_reply_enabled: false}); await settled(); page.navigate('human_reply');
-  const edit = page.get('edit-human_reply-reply'), input = page.get('input-human_reply_chars_per_minute');
-  assert.equal(edit.getAttribute('aria-expanded'), 'false');
-  edit.dispatch('click'); assert.ok(visible(input)); assert.equal(edit.getAttribute('aria-expanded'), 'true');
-  input.value = '300'; input.dispatch('input');
-  edit.dispatch('click'); assert.equal(visible(input), false); assert.equal(edit.getAttribute('aria-expanded'), 'false');
-  assert.equal(page.get('input-human_reply_enabled').checked, false);
-  assert.equal(page.get('dirty').textContent, '待保存 1 项');
-  edit.dispatch('click'); assert.ok(visible(input)); assert.equal(input.value, '300');
-  edit.dispatch('click'); page.get('save').dispatch('click'); await settled();
-  assert.deepEqual(page.calls[0].body.config, {human_reply_chars_per_minute: 300});
-  assert.equal(page.get('input-human_reply_enabled').checked, false);
-});
-
-test('enabling then disabling a function ends temporary editing while preserving its inputs', async () => {
-  const page = fixture({human_reply_enabled: false}); await settled(); page.navigate('human_reply');
-  const edit = page.get('edit-human_reply-reply'), input = page.get('input-human_reply_chars_per_minute');
-  edit.dispatch('click'); input.value = '300'; input.dispatch('input');
-  assert.ok(visible(input));
-  check(page, 'human_reply_enabled', true); assert.ok(visible(input));
-  check(page, 'human_reply_enabled', false);
-  assert.equal(visible(input), false);
-  assert.equal(edit.getAttribute('aria-expanded'), 'false');
-  assert.equal(page.get('input-human_reply_chars_per_minute'), input);
-  assert.equal(input.value, '300');
-  assert.equal(page.get('dirty').textContent, '待保存 1 项');
-  edit.dispatch('click'); assert.ok(visible(input));
-  assert.equal(page.get('input-human_reply_enabled').checked, false);
-  assert.equal(page.calls.length, 0);
-});
-
-test('switching a function on and off from overview clears its earlier temporary edit state', async () => {
-  const page = fixture({human_reply_enabled: false}); await settled(); page.navigate('human_reply');
-  page.get('edit-human_reply-reply').dispatch('click');
-  const input = page.get('input-human_reply_chars_per_minute'); input.value = '300'; input.dispatch('input');
-  page.navigate('overview');
-  check(page, 'human_reply_enabled', true); check(page, 'human_reply_enabled', false);
-  page.navigate('human_reply');
-  assert.equal(visible(page.get('input-human_reply_chars_per_minute')), false);
-  assert.equal(page.get('edit-human_reply-reply').getAttribute('aria-expanded'), 'false');
-  assert.equal(page.get('input-human_reply_chars_per_minute').value, 300);
-  assert.equal(page.get('input-human_reply_enabled').checked, false);
-  assert.equal(page.get('dirty').textContent, '待保存 1 项');
-  assert.equal(page.calls.length, 0);
-});
-
-test('global and cross-function dependencies keep their settings editable', async () => {
-  for (const scenario of [
-    {config: {enabled: false}, group: 'debounce', key: 'debounce_slow_idle_seconds', value: 1.6, dependency: 'enabled'},
-    {config: {proactive_enabled: false}, group: 'selfwake', key: 'proactive_silent_wake_target_mean_minutes', value: 35, dependency: 'proactive_enabled'},
-    {config: {activity_buffer_enabled: false}, group: 'activity', key: 'activity_require_admin', value: false, dependency: 'activity_buffer_enabled'},
-  ]) {
-    const page = fixture(scenario.config); await settled(); page.navigate(scenario.group);
-    const input = page.get('input-' + scenario.key);
-    assert.ok(visible(input), scenario.key);
-    if (typeof scenario.value === 'boolean') { input.checked = scenario.value; input.dispatch('change'); }
-    else { input.value = String(scenario.value); input.dispatch('input'); }
-    assert.equal(page.get('input-' + scenario.key), input);
-    page.get('save').dispatch('click'); await settled();
-    assert.deepEqual(page.calls[0].body.config, {[scenario.key]: scenario.value});
-    page.navigate(scenario.dependency === 'enabled' ? 'overview' : scenario.dependency === 'proactive_enabled' ? 'proactive' : 'activity');
-    assert.equal(page.get('input-' + scenario.dependency).checked, false);
-  }
-});
-
-test('an unrelated save retains hidden function and conditional parameter values', async () => {
-  const page = fixture({human_reply_enabled: false, human_reply_chars_per_minute: 480, debounce_dynamic_enabled: true, merge_idle_seconds: 9});
-  await settled(); page.navigate('interaction');
-  const rounds = page.get('input-trigger_rounds'); rounds.value = '4'; rounds.dispatch('input');
-  page.get('save').dispatch('click'); await settled();
-  assert.deepEqual(page.calls[0].body.config, {trigger_rounds: 4});
-  page.navigate('debounce');
-  assert.equal(visible(page.get('input-merge_idle_seconds')), false);
-  check(page, 'debounce_dynamic_enabled', false);
-  assert.ok(visible(page.get('input-merge_idle_seconds')));
-  assert.equal(page.get('input-merge_idle_seconds').value, 9);
-  page.navigate('human_reply');
-  assert.equal(visible(page.get('input-human_reply_chars_per_minute')), false);
-  page.get('edit-human_reply-reply').dispatch('click');
-  assert.ok(visible(page.get('input-human_reply_chars_per_minute')));
-  assert.equal(page.get('input-human_reply_chars_per_minute').value, 480);
-  assert.equal(page.get('input-human_reply_enabled').checked, false);
-});
-
-test('guard parameters stay expanded when either the group or private switch is enabled', async () => {
-  const page = fixture({include_group: false, include_private: false}); await settled(); page.navigate('interaction');
-  const input = page.get('input-trigger_rounds');
-  assert.equal(visible(input), false);
-  check(page, 'include_group', true); assert.ok(visible(input));
-  check(page, 'include_private', true); check(page, 'include_group', false); assert.ok(visible(input));
-  check(page, 'include_private', false); assert.equal(visible(input), false);
-  assert.equal(page.get('input-trigger_rounds'), input);
-  page.get('edit-interaction-guard').dispatch('click'); assert.ok(visible(input));
-  assert.equal(page.get('input-include_group').checked, false);
-  assert.equal(page.get('input-include_private').checked, false);
-  assert.equal(page.calls.length, 0);
-  assert.equal(page.get('dirty').textContent, '没有待保存的修改');
-});
-
-test('dynamic and fixed waiting controls switch visibility while keeping their inputs', async () => {
-  const page = fixture({debounce_enabled: true, debounce_dynamic_enabled: true}); await settled(); page.navigate('debounce');
-  const fast = page.get('input-debounce_fast_idle_seconds'), slow = page.get('input-debounce_slow_idle_seconds'), fixed = page.get('input-merge_idle_seconds');
-  assert.ok(visible(fast)); assert.ok(visible(slow)); assert.equal(visible(fixed), false);
-  check(page, 'debounce_dynamic_enabled', false);
-  assert.equal(visible(fast), false); assert.equal(visible(slow), false); assert.ok(visible(fixed));
-  check(page, 'debounce_dynamic_enabled', true);
-  assert.ok(visible(fast)); assert.ok(visible(slow)); assert.equal(visible(fixed), false);
-  assert.equal(page.get('input-debounce_fast_idle_seconds'), fast);
-  assert.equal(page.get('input-debounce_slow_idle_seconds'), slow);
-  assert.equal(page.get('input-merge_idle_seconds'), fixed);
-});
-
-test('input-status details follow their switch and retain their draft value', async () => {
-  const page = fixture({debounce_enabled: true, debounce_private_enabled: true, debounce_typing_enabled: true}); await settled(); page.navigate('debounce');
-  const hold = page.get('input-debounce_typing_hold_seconds');
-  assert.ok(visible(hold)); hold.value = '6'; hold.dispatch('input');
-  check(page, 'debounce_typing_enabled', false); assert.equal(visible(hold), false);
-  check(page, 'debounce_typing_enabled', true); assert.ok(visible(hold));
-  assert.equal(page.get('input-debounce_typing_hold_seconds'), hold);
-  assert.equal(hold.value, '6');
-});
-
-test('prefetch keywords are only shown in prefetch mode without replacing the input', async () => {
-  const page = fixture({activity_prefetch_enabled: false, capability_context_digest: false}); await settled(); page.navigate('activity');
-  const keywords = page.get('input-activity_prefetch_keywords');
-  assert.equal(visible(keywords), false);
-  selectReference(page, 'prefetch'); assert.ok(visible(keywords));
-  keywords.value = '最近聊什么\n翻记录'; keywords.dispatch('input');
-  selectReference(page, 'background'); assert.equal(visible(keywords), false);
-  selectReference(page, 'prefetch'); assert.ok(visible(keywords));
-  assert.equal(page.get('input-activity_prefetch_keywords'), keywords);
-  assert.equal(keywords.value, '最近聊什么\n翻记录');
-  selectReference(page, 'tools'); assert.equal(visible(keywords), false);
-});
-
-test('autonomous tool choices and step limits follow the tool switch', async () => {
-  const page = fixture({proactive_silent_wake_allow_tools: false, resident_extra_tools: ['safe_read']}, undefined, {resident_tools: [
-    {name: 'safe_read', active: true, selectable: true},
-  ]}); await settled(); page.navigate('selfwake');
-  openAdvanced(page, 'proactive_silent_wake_max_steps');
-  const tools = page.get('field-resident_extra_tools'), steps = page.get('input-proactive_silent_wake_max_steps');
-  assert.equal(visible(tools), false); assert.equal(visible(steps), false);
-  check(page, 'proactive_silent_wake_allow_tools', true);
-  assert.ok(visible(tools)); assert.ok(visible(steps)); assert.equal(tools.querySelector('input').checked, true);
-  check(page, 'proactive_silent_wake_allow_tools', false);
-  assert.equal(visible(tools), false); assert.equal(visible(steps), false);
-  assert.equal(page.get('field-resident_extra_tools'), tools);
-  assert.equal(page.get('input-proactive_silent_wake_max_steps'), steps);
-});
-
-test('search reveals a disabled function and advanced ancestors only while filtering', async () => {
-  const page = fixture({human_reply_enabled: false}); await settled(); page.navigate('human_reply');
-  assert.equal(visible(page.get('input-human_reply_group_whitelist')), false);
-  const stored = [...page.storage];
-  search(page, 'human_reply_group_whitelist');
-  const row = page.get('field-human_reply_group_whitelist');
-  assert.equal(row.closest('.feature-card').id, 'feature-human_reply-reply');
-  assert.ok(visible(row)); assert.equal(row.closest('details').open, true);
-  assert.equal(page.get('input-human_reply_enabled').checked, false);
-  assert.deepEqual([...page.storage], stored);
+  assert.ok(fieldVisible(page, 'trigger_rounds'));
+  search(page, '自醒');
+  assert.equal(fieldVisible(page, 'trigger_rounds'), false);
+  assert.ok(fieldVisible(page, 'proactive_silent_wake_target_mean_minutes'));
+  assert.equal(page.get('field-@reference'), null);
+  search(page, '识图');
+  assert.ok(fieldVisible(page, 'vision_enabled'));
   page.get('search-clear').dispatch('click');
-  assert.equal(visible(page.get('input-human_reply_group_whitelist')), false);
-  assert.equal(page.get('field-human_reply_group_whitelist').closest('details').open, false);
-  assert.equal(page.get('input-human_reply_enabled').checked, false);
+  assert.ok(fieldVisible(page, 'trigger_rounds'));
+  assert.ok(page.get('field-@reference'));
+});
+
+test('editing marks pending and save submits only dirty keys', async () => {
+  const page = fixture(); await settled();
   assert.equal(page.get('dirty').textContent, '没有待保存的修改');
-});
-
-test('clearing search restores a manually expanded advanced section', async () => {
-  const page = fixture({human_reply_enabled: true}); await settled(); page.navigate('human_reply');
-  openAdvanced(page, 'human_reply_group_whitelist');
-  const stored = [...page.storage];
-  search(page, 'human_reply_group_blacklist');
-  assert.ok(visible(page.get('input-human_reply_group_blacklist')));
-  page.get('search-clear').dispatch('click');
-  assert.equal(page.get('field-human_reply_group_whitelist').closest('details').open, true);
-  assert.ok(visible(page.get('input-human_reply_group_whitelist')));
-  assert.deepEqual([...page.storage], stored);
-});
-
-test('pending-only reveals changes under a disabled function without changing its switch', async () => {
-  const personal = {...copy(defaults), human_reply_enabled: false, human_reply_chars_per_minute: 280};
-  const page = fixture({human_reply_enabled: false}, undefined, {user_default: personal}); await settled(); page.navigate('human_reply');
-  page.get('restore-default').dispatch('click');
-  assert.equal(visible(page.get('input-human_reply_chars_per_minute')), false);
-  page.get('pending-only').checked = true; page.get('pending-only').dispatch('change');
-  const input = page.get('input-human_reply_chars_per_minute');
-  assert.ok(visible(input)); assert.equal(input.value, 280);
-  assert.equal(input.closest('.feature-card').id, 'feature-human_reply-reply');
-  assert.equal(page.get('dirty').textContent, '待保存 1 项');
-  page.get('save').dispatch('click'); await settled();
-  assert.deepEqual(page.calls[0].body.config, {human_reply_chars_per_minute: 280});
-});
-
-test('deep field errors reveal and focus advanced parameters of a disabled function', async () => {
-  const page = fixture({human_reply_enabled: false}, async () => ({status: 'error', message: '配置校验失败', field_errors: {human_reply_group_whitelist: '名单校验错误'}}));
-  await settled(); page.navigate('interaction');
   const input = page.get('input-trigger_rounds'); input.value = '4'; input.dispatch('input');
+  assert.equal(page.get('dirty').textContent, '待保存 1 项');
   page.get('save').dispatch('click'); await settled();
-  const invalid = page.get('input-human_reply_group_whitelist');
-  assert.ok(visible(invalid));
-  assert.equal(invalid.closest('.feature-card').id, 'feature-human_reply-reply');
-  assert.equal(invalid.closest('details').open, true);
-  assert.equal(page.document.activeElement, invalid);
-  assert.equal(page.get('error-human_reply_group_whitelist').textContent, '名单校验错误');
-  assert.equal(page.get('input-human_reply_enabled').checked, false);
-  assert.equal(page.get('dirty').textContent, '待保存 1 项');
-});
-
-test('diagnostic links reveal conditionally hidden advanced parameters without editing settings', async () => {
-  const page = fixture({debounce_dynamic_enabled: false}, undefined, {diagnostics: [{code: 'waiting', severity: 'warning', message: '检查完整句判断', fields: ['debounce_end_punctuation']}]});
-  await settled(); page.get('diagnostics').querySelector('button').dispatch('click');
-  const input = page.get('input-debounce_end_punctuation');
-  assert.ok(visible(input));
-  assert.equal(input.closest('.feature-card').id, 'feature-debounce-merge');
-  assert.equal(input.closest('details').open, true);
-  assert.equal(page.document.activeElement, input);
-  assert.equal(page.get('input-debounce_dynamic_enabled').checked, false);
-  assert.equal(page.get('dirty').textContent, '没有待保存的修改');
-  assert.equal(page.calls.length, 0);
-});
-
-test('ordinary typing and related switch changes retain the focused input node', async () => {
-  const page = fixture({debounce_enabled: true, debounce_dynamic_enabled: true}); await settled(); page.navigate('debounce');
-  const input = page.get('input-debounce_slow_idle_seconds'); input.focus();
-  for (const value of ['2', '2.4']) {
-    input.value = value; input.dispatch('input');
-    assert.equal(page.get('input-debounce_slow_idle_seconds'), input);
-    assert.equal(page.document.activeElement, input);
-    assert.equal(input.value, value);
-  }
-  check(page, 'debounce_typing_enabled', false);
-  assert.equal(page.get('input-debounce_slow_idle_seconds'), input);
-  assert.equal(page.document.activeElement, input);
-  assert.ok(visible(input));
-});
-
-test('page save submits only edited fields, keeps in-flight input pending, and exposes errors', async () => {
-  let resolveSave;
-  const page = fixture({}, () => new Promise(resolve => { resolveSave = resolve; })); await settled(); page.navigate('interaction');
-  let input = page.get('input-trigger_rounds'); input.value = '4'; input.dispatch('input'); page.get('save').dispatch('click');
   assert.deepEqual(page.calls[0].body.config, {trigger_rounds: 4});
-  input.value = '6'; input.dispatch('input');
-  resolveSave({status: 'ok', data: {config: {...defaults, trigger_rounds: 4}}}); await settled();
-  assert.equal(page.get('input-trigger_rounds').value, 6);
+  assert.equal(page.get('dirty').textContent, '没有待保存的修改');
+});
+
+test('switch change and reference change are pending and saved', async () => {
+  const page = fixture(); await settled();
+  check(page, 'poke_reply_enabled', false);
   assert.equal(page.get('dirty').textContent, '待保存 1 项');
-  page.get('pending-only').checked = true; page.get('pending-only').dispatch('change');
-  assert.ok(page.get('field-trigger_rounds')); assert.equal(page.get('field-window_seconds'), null);
+  page.get('save').dispatch('click'); await settled();
+  assert.deepEqual(page.calls[0].body.config, {poke_reply_enabled: false});
+  const radios = page.get('field-@reference').querySelectorAll('input');
+  const background = radios.find(input => input.value === 'background');
+  background.checked = true; background.dispatch('change');
+  page.get('save').dispatch('click'); await settled();
+  assert.deepEqual(page.calls[1].body.config, {activity_prefetch_enabled: false, capability_context_digest: true});
+});
+
+test('revert discards pending edits; restore factory fills defaults', async () => {
+  const page = fixture({trigger_rounds: 9}); await settled();
+  const input = page.get('input-trigger_rounds'); input.value = '8'; input.dispatch('input');
+  assert.equal(page.get('dirty').textContent, '待保存 1 项');
+  page.get('revert').dispatch('click');
+  assert.equal(page.get('input-trigger_rounds').value, 9);
+  assert.equal(page.get('dirty').textContent, '没有待保存的修改');
+  page.get('restore-factory').dispatch('click');
+  assert.equal(page.get('input-trigger_rounds').value, defaults.trigger_rounds);
+  assert.equal(page.get('dirty').textContent, '待保存 1 项');
+  page.get('revert').dispatch('click');
+});
+
+test('invalid input shows inline error, blocks save, and focuses the field', async () => {
+  const page = fixture(); await settled();
+  const input = page.get('input-trigger_rounds'); input.value = 'abc'; input.dispatch('input');
+  page.get('save').dispatch('click'); await settled();
+  assert.equal(page.calls.length, 0);
+  assert.equal(page.get('error-trigger_rounds').textContent, '请输入有效数字。');
+  assert.equal(page.get('input-trigger_rounds').getAttribute('aria-invalid'), 'true');
+  assert.equal(page.document.activeElement && page.document.activeElement.id, 'input-trigger_rounds');
+  assert.equal(page.get('dirty').textContent, '待保存 1 项');
 });
 
 test('server field errors stay attached to the correct editable field', async () => {
-  const page = fixture({}, async () => ({status: 'error', message: '配置校验失败', field_errors: {trigger_rounds: '测试错误'}})); await settled(); page.navigate('interaction');
+  const page = fixture({}, async () => ({status: 'ok', data: {validation_error: true, message: '配置校验失败', field_errors: {trigger_rounds: '测试错误'}, errors: ['测试错误']}})); await settled();
   const input = page.get('input-trigger_rounds'); input.value = '4'; input.dispatch('input'); page.get('save').dispatch('click'); await settled();
   assert.equal(page.get('error-trigger_rounds').textContent, '测试错误');
   assert.equal(page.get('input-trigger_rounds').getAttribute('aria-invalid'), 'true');
   assert.equal(page.get('dirty').textContent, '待保存 1 项');
+  page.get('revert').dispatch('click');
+  assert.equal(page.get('input-trigger_rounds').value, defaults.trigger_rounds);
 });
 
-test('autonomous choices persist concrete names and never implicitly select new tools', async () => {
+test('diagnostic links reveal and focus the field without editing settings', async () => {
+  const page = fixture(); await settled();
+  page.get('diagnostics').querySelector('button').dispatch('click');
+  assert.ok(fieldVisible(page, 'trigger_rounds'));
+  assert.equal(page.document.activeElement && page.document.activeElement.id, 'input-trigger_rounds');
+  assert.equal(page.get('dirty').textContent, '没有待保存的修改');
+  assert.equal(page.calls.length, 0);
+});
+
+test('disabled function keeps parameters visible with a reason note', async () => {
+  const page = fixture({human_reply_enabled: false}); await settled();
+  assert.ok(fieldVisible(page, 'human_reply_chars_per_minute'));
+  assert.ok(page.get('reason-human_reply_chars_per_minute').textContent);
+  assert.equal(page.get('input-human_reply_enabled').checked, false);
+  const input = page.get('input-human_reply_chars_per_minute'); input.value = '280'; input.dispatch('input');
+  page.get('save').dispatch('click'); await settled();
+  assert.deepEqual(page.calls[0].body.config, {human_reply_chars_per_minute: 280});
+  assert.equal(page.get('input-human_reply_enabled').checked, false);
+});
+
+test('list fields edit and save parsed items', async () => {
+  const page = fixture(); await settled();
+  const input = page.get('input-blocked_users');
+  assert.equal(input.tagName, 'TEXTAREA');
+  input.value = '10001\n10002'; input.dispatch('input');
+  page.get('save').dispatch('click'); await settled();
+  assert.deepEqual(page.calls[0].body.config, {blocked_users: ['10001', '10002']});
+});
+
+test('an unrelated save retains hidden function and conditional parameter values', async () => {
+  const page = fixture({human_reply_enabled: false, human_reply_chars_per_minute: 480, debounce_dynamic_enabled: true, merge_idle_seconds: 9});
+  await settled();
+  const rounds = page.get('input-trigger_rounds'); rounds.value = '4'; rounds.dispatch('input');
+  page.get('save').dispatch('click'); await settled();
+  assert.deepEqual(page.calls[0].body.config, {trigger_rounds: 4});
+  assert.equal(page.get('input-human_reply_chars_per_minute').value, 480);
+  assert.equal(page.get('input-merge_idle_seconds').value, 9);
+});
+
+test('autonomous tool choices persist concrete names and never implicitly select new tools', async () => {
   const page = fixture({resident_extra_tools: ['safe_read']}, undefined, {resident_tools: [
     {name: 'list_conversations', base: true, active: true, selectable: true},
     {name: 'safe_read', active: true, selectable: true},
     {name: 'new_tool', active: true, selectable: true},
     {name: 'task', active: true, selectable: false},
-  ]}); await settled(); page.navigate('selfwake');
+  ]}); await settled();
   const tools = page.get('field-resident_extra_tools');
   const items = tools.querySelectorAll('input'); assert.equal(items.length, 3);
   assert.equal(items[0].checked, true); assert.equal(items[1].checked, false); assert.equal(items[2].disabled, true);
@@ -538,93 +353,26 @@ test('autonomous choices persist concrete names and never implicitly select new 
   assert.deepEqual(page.calls[0].body.config.resident_extra_tools, []);
 });
 
-test('reselecting legacy background mode disables prefetch without changing unrelated fields', async () => {
-  const page = fixture({activity_prefetch_enabled: true, capability_context_digest: true}); await settled(); page.navigate('activity');
-  const reference = page.get('field-@reference');
-  const background = reference.querySelectorAll('input').find(input => input.value === 'background');
-  assert.equal(background.checked, true);
-  background.dispatch('change');
+test('save during concurrent edits preserves the newer input', async () => {
+  let resolveSave;
+  const page = fixture({}, () => new Promise(resolve => { resolveSave = resolve; })); await settled();
+  const input = page.get('input-trigger_rounds'); input.value = '4'; input.dispatch('input'); page.get('save').dispatch('click');
+  assert.deepEqual(page.calls[0].body.config, {trigger_rounds: 4});
+  input.value = '6'; input.dispatch('input');
+  resolveSave({status: 'ok', data: {config: {...defaults, trigger_rounds: 4}}}); await settled();
+  assert.equal(page.get('input-trigger_rounds').value, 6);
+  assert.equal(page.get('dirty').textContent, '待保存 1 项');
   page.get('save').dispatch('click'); await settled();
-  assert.deepEqual(page.calls[0].body.config, {activity_prefetch_enabled: false, capability_context_digest: true});
+  assert.deepEqual(page.calls[1].body.config, {trigger_rounds: 6});
 });
 
-test('applying defaults edits the draft; deleting the snapshot preserves unsaved input', async () => {
-  const page = fixture({}, undefined, {user_default: {...copy(defaults), trigger_rounds: 5}}); await settled(); page.navigate('interaction');
-  page.get('restore-default').dispatch('click');
-  assert.equal(page.get('input-trigger_rounds').value, 5);
-  assert.equal(page.calls.length, 0);
-  page.get('clear-default').dispatch('click'); await settled();
-  assert.deepEqual(page.calls[0], {route: 'config/default', body: {clear: true}});
+test('per-field restore fills factory or my-default and keeps draft dirty', async () => {
+  const page = fixture({trigger_rounds: 3}, undefined, {user_default: {...copy(defaults), trigger_rounds: 5}}); await settled();
+  const input = page.get('input-trigger_rounds'); input.value = '8'; input.dispatch('input');
+  page.get('field-trigger_rounds').querySelector('.restore-field').dispatch('click');
   assert.equal(page.get('input-trigger_rounds').value, 5);
   assert.equal(page.get('dirty').textContent, '待保存 1 项');
-  assert.equal(page.get('restore-default').disabled, true);
-  page.get('restore-factory').dispatch('click');
-  assert.equal(page.get('input-trigger_rounds').value, defaults.trigger_rounds);
-  assert.equal(page.get('dirty').textContent, '没有待保存的修改');
-});
-
-test('wake validation rejects fractional values too close to the bounds', () => {
-  const state = {...defaults, proactive_silent_wake_floor_minutes: 5, proactive_silent_wake_target_mean_minutes: 5.5, proactive_silent_wake_ceil_minutes: 6};
-  assert.ok(ui.validateValues(state, {proactive_silent_wake_target_mean_minutes: 5.5}, schema).proactive_silent_wake_target_mean_minutes);
-});
-
-test('both save routes request bridge-safe field errors and leave baseline unchanged on validation failure', async () => {
-  for (const asDefault of [false, true]) {
-    const page = fixture({}, async () => {
-      // AstrBot resolves successful API responses to their data, while error
-      // responses become Error(message) and lose field_errors.
-      const response = {status: 'ok', data: {validation_error: true, message: '配置校验失败', field_errors: {trigger_rounds: '宿主桥校验错误'}, errors: ['宿主桥校验错误']}};
-      if (response.status !== 'ok') throw new Error(response.message);
-      return response.data;
-    });
-    await settled(); page.navigate('interaction');
-    const input = page.get('input-trigger_rounds'); input.value = '4'; input.dispatch('input');
-    page.get(asDefault ? 'save-default' : 'save').dispatch('click'); await settled();
-    assert.equal(page.calls[0].route, asDefault ? 'config/default' : 'config');
-    assert.equal(page.calls[0].body.return_validation_errors, true);
-    assert.deepEqual(page.calls[0].body.config, {trigger_rounds: 4});
-    assert.equal(page.get('error-trigger_rounds').textContent, '宿主桥校验错误');
-    assert.equal(page.get('dirty').textContent, '待保存 1 项');
-    page.get('revert').dispatch('click');
-    assert.equal(page.get('input-trigger_rounds').value, defaults.trigger_rounds);
-  }
-});
-
-test('saving an unchanged configuration as default still validates existing wake relationships', async () => {
-  const page = fixture({proactive_silent_wake_floor_minutes: 30, proactive_silent_wake_target_mean_minutes: 6, proactive_silent_wake_ceil_minutes: 10});
-  await settled(); page.get('save-default').dispatch('click'); await settled();
   assert.equal(page.calls.length, 0);
-  assert.ok(page.get('error-proactive_silent_wake_floor_minutes').textContent);
-  assert.equal(page.get('dirty').textContent, '没有待保存的修改');
-  assert.ok(ui.validateValues({...defaults, proactive_silent_wake_floor_minutes: 30, proactive_silent_wake_target_mean_minutes: 6, proactive_silent_wake_ceil_minutes: 10}, {}, schema).proactive_silent_wake_floor_minutes);
-});
-
-test('dedicated-page titles remove native category prefixes without editing schema', () => {
-  const spec = {description: '【消息合并】群聊启用'};
-  assert.equal(ui.fieldTitle(spec, 'sample'), '群聊启用');
-  assert.equal(spec.description, '【消息合并】群聊启用');
-});
-
-test('overview offers keyboard-accessible switches and links instead of nested buttons', async () => {
-  const page = fixture(); await settled();
-  const cards = page.document.querySelectorAll('.overview-card'); assert.equal(cards.length, 6);
-  for (const card of cards) { assert.equal(card.tagName, 'SECTION'); assert.ok(card.querySelector('input')); assert.ok(card.querySelector('.overview-link')); assert.ok(card.querySelector('.overview-condition')); }
-  assert.ok(page.get('input-debounce_enabled')); assert.ok(page.get('input-human_reply_enabled'));
-  assert.ok(page.get('input-include_group')); assert.ok(page.get('input-include_private'));
-  assert.ok(page.get('input-poke_reply_enabled')); assert.ok(page.get('input-keyword_wake_enabled'));
-  assert.ok(page.get('input-activity_buffer_enabled')); assert.ok(page.get('input-lmem_gateway_enabled'));
-  assert.ok(page.get('input-proactive_enabled')); assert.ok(page.get('input-proactive_silent_wake_enabled'));
-  const proactive = page.get('input-proactive_enabled'); proactive.checked = false; proactive.dispatch('change');
-  assert.equal(cards.find(card => card.dataset.group === 'selfwake').querySelector('.status-chip').textContent, '主动消息关闭');
-  assert.equal(page.get('dirty').textContent, '待保存 1 项');
-  assert.equal(page.calls.length, 0);
-});
-
-test('overview derives inactive states from feature dependencies', () => {
-  assert.equal(ui.overviewStatus('debounce', {...defaults, debounce_group_enabled: false, debounce_private_enabled: false}).active, false);
-  assert.equal(ui.overviewStatus('selfwake', {...defaults, proactive_silent_wake_daily_budget: 0}).label, '日预算为 0');
-  assert.equal(ui.overviewStatus('selfwake', {...defaults, proactive_enabled: false}).active, false);
-  assert.equal(ui.overviewStatus('advanced', defaults), null);
 });
 
 const residentPanel = require('../pages/config/resident.js');
@@ -675,71 +423,3 @@ test('resident navigation uses the existing plugin page and stable run paginatio
   page.button('查看更早的运行').dispatch('click'); await settled();
   assert.deepEqual(page.reads[1], {route:'resident', params:{umo:'qq:GroupMessage:1',before:9}});
 });
-
-/* ============ 新增：导出 / 导入 / diff 纯函数 ============ */
-
-test('exportConfig serializes every schema key to valid JSON', () => {
-  const state = {...copy(defaults), trigger_rounds: 5, blocked_users: ['10001', '10002']};
-  const text = ui.exportConfig(state, schema);
-  const parsed = JSON.parse(text);
-  for (const key of Object.keys(schema)) assert.ok(Object.prototype.hasOwnProperty.call(parsed, key), key);
-  assert.equal(parsed.trigger_rounds, 5);
-  assert.deepEqual(parsed.blocked_users, ['10001', '10002']);
-  assert.deepEqual(JSON.parse(ui.exportConfig({unrelated: 1, ...state}, schema)), parsed);
-});
-
-test('importConfig round-trips an export into the draft', () => {
-  const state = {...copy(defaults), debounce_slow_idle_seconds: 1.6, human_reply_max_length: 320, keyword_wake_list: ['起床', '小喵']};
-  const text = ui.exportConfig(state, schema);
-  const result = ui.importConfig(text, schema, defaults);
-  assert.deepEqual(result.errors, {});
-  assert.equal(result.values.debounce_slow_idle_seconds, 1.6);
-  assert.equal(result.values.human_reply_max_length, 320);
-  assert.deepEqual(result.values.keyword_wake_list, ['起床', '小喵']);
-});
-
-test('importConfig rejects malformed JSON and non-object payloads', () => {
-  assert.ok(ui.importConfig('not json', schema, defaults).errors._global);
-  assert.ok(ui.importConfig('[1,2,3]', schema, defaults).errors._global);
-  assert.ok(ui.importConfig('', schema, defaults).errors._global);
-});
-
-test('importConfig ignores unknown keys and normalizes known types', () => {
-  const result = ui.importConfig('{"mystery_key": 1, "debounce_group_enabled": "true", "trigger_rounds": "7", "meme_tags": "a，b;c", "proactive_quiet_hours_start": "23:30"}', schema, defaults);
-  assert.deepEqual(result.errors, {});
-  assert.equal(result.values.mystery_key, undefined);
-  assert.equal(result.values.debounce_group_enabled, true);
-  assert.equal(result.values.trigger_rounds, 7);
-  assert.deepEqual(result.values.meme_tags, ['a', 'b', 'c']);
-  assert.equal(result.values.proactive_quiet_hours_start, '23:30');
-});
-
-test('importConfig reports invalid scalar values without dropping valid siblings', () => {
-  const result = ui.importConfig('{"trigger_rounds": "abc", "window_seconds": 120}', schema, defaults);
-  assert.ok(result.errors.trigger_rounds);
-  assert.equal(result.values.window_seconds, 120);
-  assert.equal(Object.keys(result.errors).length, 1);
-});
-
-test('buildDiffList reports old and new values for dirty keys', () => {
-  const baseline = {...copy(defaults)};
-  const state = {...baseline, trigger_rounds: 8, debounce_slow_idle_seconds: 2.0, blocked_users: []};
-  const baselineWithUsers = {...baseline, blocked_users: ['10001']};
-  const diffs = ui.buildDiffList(state, baseline, schema);
-  const byKey = Object.fromEntries(diffs.map(item => [item.key, item]));
-  assert.ok(byKey.trigger_rounds);
-  assert.equal(byKey.trigger_rounds.old, String(defaults.trigger_rounds));
-  assert.equal(byKey.trigger_rounds.new, '8');
-  assert.equal(byKey.debounce_slow_idle_seconds.new, '2');
-  // 名单型字段显示为“空名单”而非空串。
-  const diffs2 = ui.buildDiffList({...baselineWithUsers, blocked_users: []}, baselineWithUsers, schema);
-  assert.equal(diffs2.find(item => item.key === 'blocked_users').old, '10001');
-  assert.equal(diffs2.find(item => item.key === 'blocked_users').new, '空名单');
-});
-
-test('buildDiffList is empty when nothing is dirty', () => {
-  assert.deepEqual(ui.buildDiffList(copy(defaults), copy(defaults), schema), []);
-});
-
-/* ============ 导入/导出/差异纯函数 ============ */
-

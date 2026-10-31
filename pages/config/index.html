@@ -7,68 +7,41 @@
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
-  <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
-  <div class="app" id="app" hidden>
-    <aside class="sidebar" id="sidebar">
-      <div class="brand">
-        <span class="brand-icon" aria-hidden="true">喵</span>
-        <div class="brand-copy"><strong>糯小喵</strong><small>配置中心</small></div>
-        <button id="drawer-close" class="icon-btn mobile-only" type="button" aria-label="关闭导航">×</button>
-      </div>
-      <nav id="tabs" aria-label="配置导航"></nav>
-      <div class="sidebar-note">各功能独立设置。<br>修改先暂存，点击保存后生效。</div>
-    </aside>
-    <main class="main">
-      <header class="topbar">
-        <button id="drawer-toggle" class="icon-btn mobile-only" type="button" aria-label="打开配置导航">☰</button>
-        <div class="search-wrap">
-          <span class="search-icon" aria-hidden="true">⌕</span>
-          <input id="search" type="search" placeholder="搜索配置项或说明" aria-label="搜索配置" autocomplete="off">
-          <button id="search-clear" class="icon-btn search-clear" type="button" aria-label="清空搜索" hidden>×</button>
-        </div>
-        <label class="pending-filter" title="只显示有未保存修改的配置项">
-          <input id="pending-only" type="checkbox">仅看待保存
-        </label>
-        <button id="theme-toggle" class="icon-btn" type="button" aria-label="切换深浅主题" title="切换深浅主题">◐</button>
-      </header>
-      <div class="page-heading">
-        <div class="heading-copy">
-          <p class="eyebrow">CONFIGURATION</p>
-          <h1 id="page-title">总览</h1>
-          <p id="page-description"></p>
-        </div>
-        <span id="timezone" class="timezone"></span>
-      </div>
-      <div id="banner" class="notice warning" hidden></div>
-      <div id="diagnostics" class="diagnostics" aria-live="polite"></div>
-      <div id="error-summary" class="notice error" role="alert" hidden></div>
-      <div id="pane" class="pane"></div>
-      <footer class="savebar">
-        <div class="save-status">
-          <strong id="dirty">没有待保存的修改</strong>
-          <small id="save-detail">配置加载后可编辑</small>
-        </div>
-        <div class="save-actions">
-          <button id="revert" class="btn quiet" type="button" disabled>撤销修改</button>
-          <div class="dropdown">
-            <button id="default-menu-btn" class="btn quiet" type="button" aria-haspopup="true" aria-expanded="false">默认设置 ▾</button>
-            <div id="default-menu" class="dropdown-menu" hidden>
-              <button id="save-default" type="button">保存并设为我的默认</button>
-              <button id="restore-default" type="button">应用我的默认</button>
-              <button id="restore-factory" type="button">应用出厂默认</button>
-              <button id="clear-default" type="button">删除我的默认快照</button>
-            </div>
-          </div>
-          <button id="save" class="btn primary" type="button" disabled>保存修改</button>
-        </div>
-      </footer>
-    </main>
-  </div>
-  <div id="boot" class="boot" role="status">
-    <span class="brand-icon" aria-hidden="true">喵</span>
-    <p>正在读取配置…</p>
-  </div>
-  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <header class="topbar" id="topbar">
+    <div class="brand"><strong>糯小喵</strong><span class="brand-sub">配置</span></div>
+    <div class="search-wrap">
+      <input id="search" type="search" placeholder="搜索配置项" aria-label="搜索配置" autocomplete="off">
+      <button id="search-clear" class="search-clear" type="button" aria-label="清空搜索" hidden>×</button>
+    </div>
+    <span id="timezone" class="timezone"></span>
+  </header>
+
+  <main class="main" id="app" hidden>
+    <div id="banner" class="banner" hidden></div>
+    <div id="diagnostics" class="diagnostics" aria-live="polite"></div>
+    <div id="error-summary" class="error-summary" role="alert" hidden></div>
+    <div id="groups" class="groups"></div>
+    <details id="resident" class="resident">
+      <summary>自主运行与状态</summary>
+      <div id="resident-root"></div>
+    </details>
+  </main>
+
+  <footer class="savebar">
+    <div class="save-status">
+      <strong id="dirty">没有待保存的修改</strong>
+      <small id="save-detail">配置加载后可编辑</small>
+    </div>
+    <div class="save-actions">
+      <button id="restore-factory" class="btn" type="button" disabled>恢复出厂默认</button>
+      <button id="revert" class="btn" type="button" disabled>撤销修改</button>
+      <button id="save" class="btn primary" type="button" disabled>保存修改</button>
+    </div>
+  </footer>
+
+  <div id="boot" class="boot" role="status"><p>正在读取配置…</p></div>
+  <div id="toast" class="toast" role="status" hidden></div>
+
   <script src="./resident.js"></script>
   <script src="./app.js"></script>
 </body>
