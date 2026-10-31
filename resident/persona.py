@@ -50,7 +50,9 @@ class Persona:
     async def inject(self, event, req):
         if not self.service.plugin.resident_state_enabled:
             return
-        persona, _ = await self.resolve(event, req)
+        # 人设/心情/关注点始终按「真实会话」解析：即使开启全局主脑把对话历史
+        # 切到 master 会话，也不把别处的人设、心情和关注点串到这里来。
+        persona, _ = await self.resolve(event)
         if persona.startswith("@session:"):
             return
         self.service.seen_personas[event.unified_msg_origin] = persona

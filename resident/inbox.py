@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 
 class Inbox:
     def __init__(self, service):
@@ -60,6 +62,107 @@ class Inbox:
                 "INSERT OR IGNORE INTO resident_reads(persona,message_id) SELECT ?,id FROM activity_messages WHERE id=?",
                 ((persona, i) for i in ids),
             )
+
+    def mark_channel(self, persona, current):
+        """把当前会话的未读消息整体标记已读（点名唤醒后不再计入未读）。"""
+        if not self.plugin.resident_inbox_enabled or not current:
+            return
+        platform, kind, conversation_id = current
+        baseline = int(self.store.meta("inbox_baseline", "0"))
+        with self.store.transaction() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO resident_reads(persona,message_id) "
+                "SELECT ?,id FROM activity_messages WHERE platform_id=? AND kind=? "
+                "AND conversation_id=? AND id>? AND sender_id!='bot'",
+                (persona, platform, kind, conversation_id, baseline),
+            )
+
+    def silence_candidate(self, event, keyword_woken=False):
+        """未读信箱分流判定：群聊、未点名、未命中关键词、非指令的普通消息。
+
+        返回 True 时调用方应 stop_event() 静默并触发后台话题概括。
+        """
+        p = self.plugin
+        if not p.unread_inbox_enabled:
+            return False
+        if p._is_poke_event(event) or p._is_typing_notice(event):
+            return False
+        synthetic = getattr(p, "SYNTHETIC_EVENT_EXTRA", "nuoxiaomiao_synthetic")
+        if event.get_extra(synthetic) or p._is_self_wake_event(event):
+            return False
+        if keyword_woken or getattr(event, "is_at_or_wake_command", False):
+            return False
+        if p._is_command_event(event):
+            return False
+        if not event.get_group_id():
+            return False
+        if not p._event_group_allowed(
+            event,
+            getattr(p, "inbox_group_whitelist", set()),
+            getattr(p, "inbox_group_blacklist", set()),
+        ):
+            return False
+        return True
+
+    async def notice(self, event, persona, limit=0):
+        """点名通知卡：当前会话的未读情况、近期话题与最近未读消息。"""
+        p = self.plugin
+        limit = max(1, min(30, int(limit or getattr(p, "mention_notice_limit", 20))))
+        current = p._current_conversation(event)
+        if current is None:
+            return ""
+        sessions = [
+            s
+            for s in p._activity_sessions("all")
+            if (s["platform_id"], s["kind"], s["conversation_id"]) == current
+        ]
+        if not sessions:
+            return ""
+        session = sessions[0]
+        counts = self.counts(persona, session, event)
+        baseline = int(self.store.meta("inbox_baseline", "0"))
+        rows = self.store.rows(
+            "SELECT id,ts,text,sender_id,sender_name,mentioned FROM activity_messages "
+            "WHERE platform_id=? AND kind=? AND conversation_id=? AND id>? AND sender_id!='bot' "
+            "AND NOT EXISTS (SELECT 1 FROM resident_reads r WHERE r.persona=? AND r.message_id=activity_messages.id) "
+            "ORDER BY id DESC LIMIT ?",
+            (
+                session["platform_id"],
+                session["kind"],
+                session["conversation_id"],
+                baseline,
+                persona,
+                limit,
+            ),
+        )
+        rows = list(reversed(rows))
+        name = session["name"] or session["conversation_id"]
+        topic = ""
+        if p.topic_summary_enabled:
+            umo = (
+                f"{session['platform_id']}:"
+                f"{'GroupMessage' if session['kind'] == 'group' else 'FriendMessage'}:"
+                f"{session['conversation_id']}"
+            )
+            topic = self.service.topic.session_topic(umo)
+        unread = int(counts.get("unread", 0) or 0)
+        mentions = int(counts.get("unread_mentions", 0) or 0)
+        head = f"[信箱通知] 会话《{name}》有人提到你。"
+        if unread:
+            head += f"未读 {unread} 条，其中 @你 {mentions} 条。"
+        if topic:
+            head += f"近期话题：{topic}。"
+        if not rows:
+            return head
+        lines = [head, "最近未读："]
+        max_chars = getattr(p, "activity_buffer_max_text_chars", 600)
+        for row in rows:
+            sender = str(row["sender_name"] or row["sender_id"] or "某人")
+            when = time.strftime("%H:%M", time.localtime(float(row["ts"])))
+            text = str(row["text"] or "")[:max_chars]
+            tag = "（@你）" if row["mentioned"] else ""
+            lines.append(f"- {when} {sender}{tag}：{text}")
+        return "\n".join(lines)
 
     def prune(self):
         with self.store.transaction() as db:
@@ -218,10 +321,22 @@ class Inbox:
                 f"{row['platform_id']}:{'GroupMessage' if row['kind'] == 'group' else 'FriendMessage'}:{row['conversation_id']}"
             )
             row["truncated"] = bool(row["truncated"])
-        return {
+        payload = {
             "count": len(rows),
             "results": list(reversed(rows)),
             "has_more": more,
             "next_before_id": min((r["id"] for r in rows), default=None),
             "marked_read": bool(mark_read),
         }
+        # 单会话视角时附上「正在聊什么」的话题，模型一眼就能接上。
+        if self.plugin.topic_summary_enabled and len(sessions) == 1:
+            session = sessions[0]
+            umo = (
+                f"{session['platform_id']}:"
+                f"{'GroupMessage' if session['kind'] == 'group' else 'FriendMessage'}:"
+                f"{session['conversation_id']}"
+            )
+            topic = self.service.topic.session_topic(umo)
+            if topic:
+                payload["topic"] = topic
+        return payload

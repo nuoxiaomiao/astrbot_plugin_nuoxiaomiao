@@ -13,6 +13,9 @@ from .inbox import Inbox
 from .persona import Persona
 from .integration import Integration
 from .autonomy import Autonomy
+from .vision import Vision
+from .topic import Topic
+from .master import Master
 
 
 class ResidentServices:
@@ -23,6 +26,9 @@ class ResidentServices:
         self.inbox = Inbox(self)
         self.integration = Integration(self)
         self.autonomy = Autonomy(self)
+        self.vision = Vision(self)
+        self.topic = Topic(self)
+        self.master = Master(self)
         self.seen_personas = {}
 
     async def initialize(self):

@@ -8,7 +8,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "5"
 MOODS = ("平静", "开心", "低落", "疲惫", "烦躁", "专注", "期待")
 
 
@@ -52,6 +52,11 @@ def migrate(conn: sqlite3.Connection, path: str) -> None:
             "CREATE TABLE IF NOT EXISTS resident_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, umo TEXT NOT NULL, persona TEXT NOT NULL, day TEXT NOT NULL, started REAL NOT NULL, ended REAL, status TEXT NOT NULL DEFAULT 'pending', outcome TEXT NOT NULL DEFAULT '', charged INTEGER NOT NULL DEFAULT 0, input_other INTEGER NOT NULL DEFAULT 0, input_cached INTEGER NOT NULL DEFAULT 0, output INTEGER NOT NULL DEFAULT 0, usage_unknown INTEGER NOT NULL DEFAULT 0, summary TEXT NOT NULL DEFAULT '')",
             "CREATE INDEX IF NOT EXISTS resident_runs_day ON resident_runs(day,charged)",
             "CREATE TABLE IF NOT EXISTS resident_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL, tool TEXT NOT NULL, args TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'running', result TEXT NOT NULL DEFAULT '', started REAL NOT NULL, ended REAL)",
+            "CREATE TABLE IF NOT EXISTS resident_topic_segments (id INTEGER PRIMARY KEY AUTOINCREMENT, umo TEXT NOT NULL, start_msg_id INTEGER NOT NULL, end_msg_id INTEGER NOT NULL, start_ts REAL NOT NULL, end_ts REAL NOT NULL, summary TEXT NOT NULL)",
+            "CREATE INDEX IF NOT EXISTS resident_topic_segments_umo ON resident_topic_segments(umo,end_msg_id)",
+            "CREATE TABLE IF NOT EXISTS vision_kept_images (id INTEGER PRIMARY KEY AUTOINCREMENT, umo TEXT NOT NULL, platform_message_id TEXT NOT NULL, activity_message_id INTEGER NOT NULL, idx INTEGER NOT NULL DEFAULT 0, path TEXT NOT NULL, ts REAL NOT NULL)",
+            "CREATE INDEX IF NOT EXISTS vision_kept_images_umo ON vision_kept_images(umo,platform_message_id)",
+            "CREATE TABLE IF NOT EXISTS vision_caption_cache (key TEXT PRIMARY KEY, caption TEXT NOT NULL, ts REAL NOT NULL)",
         ]
         for statement in statements:
             conn.execute(statement)
@@ -374,3 +379,132 @@ class Store:
                 "UPDATE proactive_pending SET status='unknown',done_ts=? WHERE status='sending'",
                 (time.time(),),
             )
+
+    # --- 话题概括（topic）辅助 ---
+
+    def topic_state(self, umo):
+        """返回会话的话题状态快照：topic / topic_to_id / topic_updated_at。"""
+        topic = self.meta(f"topic:{umo}", "")
+        try:
+            topic_to_id = int(self.meta(f"topic_to_id:{umo}", "0"))
+        except (TypeError, ValueError):
+            topic_to_id = 0
+        try:
+            updated_at = float(self.meta(f"topic_updated_at:{umo}", "0"))
+        except (TypeError, ValueError):
+            updated_at = 0.0
+        return {
+            "topic": topic,
+            "topic_to_id": topic_to_id,
+            "topic_updated_at": updated_at,
+        }
+
+    def set_topic_state(self, umo, topic, topic_to_id, updated_ts):
+        """落盘话题状态与已概括到的消息游标。"""
+        with self.transaction() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO resident_meta VALUES (?,?)",
+                (f"topic:{umo}", str(topic or "")),
+            )
+            db.execute(
+                "INSERT OR REPLACE INTO resident_meta VALUES (?,?)",
+                (f"topic_to_id:{umo}", str(int(topic_to_id))),
+            )
+            db.execute(
+                "INSERT OR REPLACE INTO resident_meta VALUES (?,?)",
+                (f"topic_updated_at:{umo}", str(float(updated_ts))),
+            )
+
+    def set_topic_text(self, umo, topic, updated_ts):
+        """只更新「在聊」文本（尾部不足一段时不推游标）。"""
+        with self.transaction() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO resident_meta VALUES (?,?)",
+                (f"topic:{umo}", str(topic or "")),
+            )
+            db.execute(
+                "INSERT OR REPLACE INTO resident_meta VALUES (?,?)",
+                (f"topic_updated_at:{umo}", str(float(updated_ts))),
+            )
+
+    def append_topic_segment(
+        self, umo, start_msg_id, end_msg_id, start_ts, end_ts, summary
+    ):
+        with self.transaction() as db:
+            db.execute(
+                "INSERT INTO resident_topic_segments(umo,start_msg_id,end_msg_id,start_ts,end_ts,summary) VALUES (?,?,?,?,?,?)",
+                (umo, start_msg_id, end_msg_id, start_ts, end_ts, summary),
+            )
+
+    def topic_segments(self, umo, after_id=0, limit=10):
+        rows = self.rows(
+            "SELECT id,start_msg_id,end_msg_id,start_ts,end_ts,summary FROM resident_topic_segments WHERE umo=? AND end_msg_id>? ORDER BY end_msg_id DESC LIMIT ?",
+            (umo, int(after_id), int(limit)),
+        )
+        return list(rows)
+
+    def count_today_segments(self, umo, day_start_ts):
+        row = self.rows(
+            "SELECT COUNT(*) AS n FROM resident_topic_segments WHERE umo=? AND end_ts>=?",
+            (umo, float(day_start_ts)),
+        )
+        return row[0]["n"] if row else 0
+
+    # --- 群聊识图（vision）辅助 ---
+
+    def vision_keep(self, umo, platform_message_id, activity_message_id, idx, path):
+        with self.transaction() as db:
+            db.execute(
+                "INSERT INTO vision_kept_images(umo,platform_message_id,activity_message_id,idx,path,ts) VALUES (?,?,?,?,?,?)",
+                (umo, platform_message_id, activity_message_id, int(idx), str(path), time.time()),
+            )
+
+    def vision_kept_for(self, umo, platform_message_id):
+        return self.rows(
+            "SELECT id,idx,path,ts FROM vision_kept_images WHERE umo=? AND platform_message_id=? ORDER BY idx",
+            (umo, platform_message_id),
+        )
+
+    def vision_caption_get(self, key):
+        rows = self.rows(
+            "SELECT caption FROM vision_caption_cache WHERE key=?", (str(key),)
+        )
+        return rows[0]["caption"] if rows else ""
+
+    def vision_caption_set(self, key, caption):
+        with self.transaction() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO vision_caption_cache(key,caption,ts) VALUES (?,?,?)",
+                (str(key), str(caption or ""), time.time()),
+            )
+
+    def vision_stats(self):
+        rows = self.rows(
+            "SELECT (SELECT COUNT(*) FROM vision_kept_images) AS kept,(SELECT COUNT(*) FROM vision_caption_cache) AS descs"
+        )
+        return (rows[0]["kept"] if rows else 0, rows[0]["descs"] if rows else 0)
+
+    def vision_cleanup(self, image_keep_days, ttl_days):
+        """清理过期留底行与描述缓存，返回 (删行, 删图, 删描述) 计数。"""
+        now = time.time()
+        with self.transaction() as db:
+            stale = db.execute(
+                "SELECT path FROM vision_kept_images WHERE ts<?",
+                (now - max(0, int(image_keep_days)) * 86400,),
+            ).fetchall()
+            removed_rows = db.execute(
+                "DELETE FROM vision_kept_images WHERE ts<?",
+                (now - max(0, int(image_keep_days)) * 86400,),
+            ).rowcount
+            removed_desc = db.execute(
+                "DELETE FROM vision_caption_cache WHERE ts<?",
+                (now - max(0, int(ttl_days)) * 86400,),
+            ).rowcount
+        removed_files = 0
+        for (path,) in stale:
+            try:
+                Path(path).unlink(missing_ok=True)
+                removed_files += 1
+            except OSError:
+                pass
+        return (removed_rows, removed_files, removed_desc)

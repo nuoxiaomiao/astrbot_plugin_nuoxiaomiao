@@ -503,7 +503,7 @@ class ActivityEntry:
     PLUGIN_NAME,
     "nuoxiaomiao",
     "糯小喵 - 用户屏蔽 / 连刷拦截 / 关键词唤醒 / 连发合并 / 会话速览 / 主动消息（send_message 即时说话、目标语境生成） / 静默自醒 / 长期记忆",
-    "2.2.0",
+    "2.3.0",
 )
 class NuoxiaomiaoPlugin(Star):
     """本机糯小喵：用户屏蔽、连刷拦截、关键词唤醒、智能防抖合并、会话速览、主动消息与长期记忆按需检索。"""
@@ -580,6 +580,10 @@ class NuoxiaomiaoPlugin(Star):
         self._last_localized_sweep_ts = 0.0
         # 速览库的提交节流：高频群每条消息都 commit 太重，按间隔合并提交。
         self._activity_commit_ts = 0.0
+
+        # 共享记忆与信箱的后台任务集合（识图转述、话题概括）：防 GC 中断，
+        # terminate 时统一收尾。
+        self._resident_bg_tasks: set[asyncio.Task] = set()
 
         self.resident = ResidentServices(self)
         self._apply_config()
@@ -943,6 +947,78 @@ class NuoxiaomiaoPlugin(Star):
             self._runtime_config.get("lmem_gateway_recall_tool_name", "")
             or "recall_long_term_memory"
         ).strip()
+
+        # --- 共享记忆与信箱（差异化能力，全部默认关闭，升级用户行为不变） ---
+        # 全局主脑：所有聊天共享同一个 master 会话的历史，并发聊天串行持锁。
+        self.shared_memory_enabled = self._get_bool("shared_memory_enabled", False)
+        self.master_umo = str(
+            self._runtime_config.get("master_umo", "") or ""
+        ).strip()
+        self.master_auto_bind = self._get_bool("master_auto_bind", True)
+        # 未读信箱分流：群聊未点名、未命中关键词的普通消息静默进信箱。
+        self.unread_inbox_enabled = self._get_bool("unread_inbox_enabled", False)
+        self.inbox_group_whitelist = self._normalize_str_set(
+            self._runtime_config.get("inbox_group_whitelist", [])
+        )
+        self.inbox_group_blacklist = self._normalize_str_set(
+            self._runtime_config.get("inbox_group_blacklist", [])
+        )
+        # 点名通知卡：@/关键词唤醒时注入未读情况 + 命中消息与前后文。
+        self.mention_notice_enabled = self._get_bool(
+            "mention_notice_enabled", False
+        )
+        self.mention_notice_limit = max(
+            1, min(30, self._get_int("mention_notice_limit", 20))
+        )
+        # 话题概括：轻量模型把一段未读群聊压成一句话题并落分段。
+        self.topic_summary_enabled = self._get_bool(
+            "topic_summary_enabled", False
+        )
+        self.topic_light_provider_id = str(
+            self._runtime_config.get("topic_light_provider_id", "") or ""
+        ).strip()
+        self.topic_min_unread = max(
+            1, self._get_int("topic_min_unread", 5)
+        )
+        self.topic_cooldown_seconds = max(
+            0, self._get_int("topic_cooldown_seconds", 180)
+        )
+        self.topic_max_chars = max(
+            4, min(60, self._get_int("topic_max_chars", 24))
+        )
+        self.topic_line_max_chars = max(
+            20, min(300, self._get_int("topic_line_max_chars", 120))
+        )
+        self.topic_timeout_seconds = max(
+            1, self._get_float("topic_timeout_seconds", 10)
+        )
+        self.topic_segment_msg_count = max(
+            5, min(200, self._get_int("topic_segment_msg_count", 25))
+        )
+        self.topic_segment_backfill_max = max(
+            0, min(50, self._get_int("topic_segment_backfill_max", 5))
+        )
+        # 群聊识图：群图留底、自动转述与 read_image 工具。
+        self.vision_enabled = self._get_bool("vision_enabled", False)
+        self.vision_provider_ids = self._normalize_str_set(
+            self._runtime_config.get("vision_provider_ids", [])
+        )
+        self.image_keep_days = max(0, self._get_int("image_keep_days", 3))
+        self.vision_image_max = max(
+            1, min(20, self._get_int("vision_image_max", 6))
+        )
+        self.vision_brief_max_chars = max(
+            10, min(300, self._get_int("vision_brief_max_chars", 80))
+        )
+        self.vision_read_max_chars = max(
+            50, min(2000, self._get_int("vision_read_max_chars", 500))
+        )
+        self.vision_timeout_seconds = max(
+            3, self._get_float("vision_timeout_seconds", 60)
+        )
+        self.vision_cache_ttl_days = max(
+            1, self._get_int("vision_cache_ttl_days", 30)
+        )
 
     # ------------------------------------------------------------------
     # 配置 WebUI（AstrBot 内置插件页面，不单开端口）
@@ -1439,6 +1515,16 @@ class NuoxiaomiaoPlugin(Star):
                 sender_id,
             )
 
+        # 未读信箱分流（可选）：群聊未点名、未命中关键词的普通消息直接静默进
+        # 信箱，不合并、不连刷、不回复；私聊、@、关键词唤醒与指令永远正常。
+        # 静默后仍会记录速览（_capture_chat_activity 独立于本流程）并后台概括话题。
+        if self.resident.inbox.silence_candidate(event, keyword_woken):
+            event.stop_event()
+            umo = str(event.unified_msg_origin or "")
+            if umo:
+                await self.resident.topic.maybe_summarize(umo)
+            return
+
         is_trigger = self._is_dialogue_trigger(event)
 
         # 智能防抖合并：对所有用户生效，与连刷检测范围无关。
@@ -1722,6 +1808,24 @@ class NuoxiaomiaoPlugin(Star):
             )
             return None
 
+    @filter.on_waiting_llm_request(priority=100)
+    async def on_waiting_llm_request(self, event: AstrMessageEvent) -> None:
+        """等待 LLM 时：自动绑定主脑会话、让聊天回合串行持主脑锁。"""
+        if not self.enabled or not self.shared_memory_enabled:
+            return
+        if self._is_poke_event(event) or self._is_typing_notice(event):
+            return
+        if self._is_self_wake_event(event):
+            # 自醒轮不抢主脑锁（它在自己的会话里思考，写完小结才排队写回）。
+            return
+        await self.resident.master.maybe_auto_bind(event)
+        if await self.resident.master.acquire_brain():
+            task = asyncio.current_task()
+            if task is not None:
+                task.add_done_callback(
+                    lambda _t: self.resident.master.release_brain()
+                )
+
     @filter.on_llm_request(priority=100)
     async def on_llm_request(
         self, event: AstrMessageEvent, req: ProviderRequest
@@ -1737,6 +1841,10 @@ class NuoxiaomiaoPlugin(Star):
             self._maybe_override_tool_call_prompt(req)
             await self.resident.persona.inject(event, req)
             return
+
+        # 全局主脑（可选）：聊天回合把主脑历史切到 master 会话，跨会话连续记忆。
+        # 自醒轮在上面已返回，不会抢主脑上下文。
+        await self.resident.master.bind_master(event, req)
 
         if self.debounce_enabled:
             sender_id = str(event.get_sender_id() or "").strip()
@@ -1782,6 +1890,26 @@ class NuoxiaomiaoPlugin(Star):
         # 命中不了就一次字符串扫描结束，闲聊不产生任何额外开销。
         await self._maybe_inject_context(event, req)
         self.resident.inbox.request_ids(event)
+
+        # 点名通知卡（可选）：@/关键词唤醒时注入未读情况与最近消息，
+        # 并把当前会话整体标记已读；同时后台刷新一次话题概括。
+        if self.mention_notice_enabled and getattr(
+            event, "is_at_or_wake_command", False
+        ):
+            try:
+                persona, _ = await self.resident.persona.resolve(event)
+                notice = await self.resident.inbox.notice(event, persona)
+                if notice:
+                    self._append_temp_context(req, notice)
+                    current = self._current_conversation(event)
+                    if current is not None:
+                        self.resident.inbox.mark_channel(persona, current)
+            except Exception as exc:
+                logger.debug("[%s] 注入点名通知失败: %s", DISPLAY_NAME, exc)
+        umo = str(event.unified_msg_origin or "")
+        if umo:
+            await self.resident.topic.maybe_summarize(umo)
+
         await self.resident.persona.inject(event, req)
 
     def _maybe_override_tool_call_prompt(self, req: ProviderRequest) -> None:
@@ -2376,6 +2504,10 @@ class NuoxiaomiaoPlugin(Star):
         if self._history_write_tasks:
             await asyncio.gather(*self._history_write_tasks, return_exceptions=True)
             self._history_write_tasks.clear()
+        # 识图转述 / 话题概括的后台任务同样收尾。
+        if self._resident_bg_tasks:
+            await asyncio.gather(*self._resident_bg_tasks, return_exceptions=True)
+            self._resident_bg_tasks.clear()
         # 主动消息：取消所有定时器；安排在 SQLite 里，重启后恢复。
         for task in self._proactive_tasks.values():
             task.cancel()
@@ -3813,7 +3945,11 @@ class NuoxiaomiaoPlugin(Star):
                 return
             text = self._extract_text(event)
             if not text:
-                return
+                # 纯图片消息原本不进速览库；开启群聊识图后仍要落一行
+                # （文本为空），这样 read_image 才能按记录找到留底图。
+                if not (self.vision_enabled and message_id):
+                    return
+                text = ""
             truncated = len(text) > self.activity_buffer_max_text_chars
             if truncated:
                 text = text[: self.activity_buffer_max_text_chars] + "…"
@@ -3839,10 +3975,23 @@ class NuoxiaomiaoPlugin(Star):
                 )
             )
             event.set_extra("nuoxiaomiao_inbox_ids", [activity_id])
+            # 群聊识图（可选）：把这条消息里的图片留底并在后台转述，不阻塞聊天。
+            if self.vision_enabled and message_id:
+                self._spawn_vision_keep(event, activity_id, message_id)
             self._maybe_prune_activity()
         except Exception as exc:
             # 采集只是顺手记一笔，任何失败都自己吞掉，绝不能影响聊天。
             logger.debug("[%s] 记录会话消息失败: %s", DISPLAY_NAME, exc)
+
+    def _spawn_vision_keep(
+        self, event: AstrMessageEvent, activity_id: int, message_id: str
+    ) -> None:
+        """启动一条识图留底任务；引用挂到后台任务集合防 GC。"""
+        task = asyncio.create_task(
+            self.resident.vision.keep_message_images(event, activity_id, message_id)
+        )
+        self._resident_bg_tasks.add(task)
+        task.add_done_callback(self._resident_bg_tasks.discard)
 
     def _activity_session_of(
         self, event: AstrMessageEvent
@@ -4122,6 +4271,19 @@ class NuoxiaomiaoPlugin(Star):
                 )
                 conn.commit()
             self.resident.inbox.prune()
+            # 识图留底：按保留天数清理过期图片文件与描述缓存。
+            try:
+                removed_rows, removed_files, removed_desc = self.resident.vision.cleanup()
+                if removed_rows or removed_files or removed_desc:
+                    logger.info(
+                        "[%s] 识图留底清理: rows=%d files=%d captions=%d",
+                        DISPLAY_NAME,
+                        removed_rows,
+                        removed_files,
+                        removed_desc,
+                    )
+            except Exception as exc:
+                logger.debug("[%s] 清理识图留底失败: %s", DISPLAY_NAME, exc)
         except Exception as exc:
             logger.debug("[%s] 清理会话记录失败: %s", DISPLAY_NAME, exc)
 
@@ -4495,6 +4657,9 @@ class NuoxiaomiaoPlugin(Star):
                         "messages": session["messages"],
                         "umo": f"{session['platform_id']}:{'GroupMessage' if session['kind'] == 'group' else 'FriendMessage'}:{session['conversation_id']}",
                         **self.resident.inbox.counts(persona, session, event),
+                        "topic": self.resident.topic.session_topic(
+                            f"{session['platform_id']}:{'GroupMessage' if session['kind'] == 'group' else 'FriendMessage'}:{session['conversation_id']}"
+                        ),
                         "recent_speakers": self._activity_participants(
                             session["platform_id"],
                             session["kind"],
@@ -4616,12 +4781,91 @@ class NuoxiaomiaoPlugin(Star):
             payload: dict[str, Any] = {"count": len(results), "results": results}
             if note:
                 payload["note"] = note
+            if self.topic_summary_enabled and len(sessions) == 1:
+                session = sessions[0]
+                topic = self.resident.topic.session_topic(
+                    f"{session['platform_id']}:{'GroupMessage' if session['kind'] == 'group' else 'FriendMessage'}:{session['conversation_id']}"
+                )
+                if topic:
+                    payload["topic"] = topic
             return json.dumps(payload, ensure_ascii=False)
         except ValueError as exc:
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
         except Exception as exc:
             logger.warning("[%s] 查看会话消息失败: %s", DISPLAY_NAME, exc)
             return json.dumps({"error": "查看会话消息时出错"}, ensure_ascii=False)
+
+    @filter.llm_tool(name="read_image")
+    async def read_image(
+        self,
+        event: AstrMessageEvent,
+        conversation: str = "",
+        message_id: int = 0,
+        index: int = 0,
+        question: str = "",
+    ) -> str:
+        """查看其它会话里发过的一张图片，并回答关于它的问题。
+
+        需要先调用 list_conversations 拿到会话的 umo、再用
+        read_conversation_messages 找到带图消息的 id；本工具按该消息里图片的
+        序号（0 起）读取留底图片。仅当带图消息的图片被留底后才可用。
+
+        Args:
+            conversation(string): 会话的完整 umo，如 napcat:GroupMessage:12345；从 list_conversations 获取。
+            message_id(number): read_conversation_messages 返回结果的 id（记录编号）。
+            index(number): 该消息里第几张图，从 0 开始；默认 0。
+            question(string): 想知道的细节问题，可空；留空返回已有描述。
+        """
+        try:
+            unavailable = self._activity_unavailable()
+            if unavailable:
+                return unavailable
+            if not self._activity_permission_ok(event):
+                return self._activity_denied()
+            if not self.vision_enabled:
+                return json.dumps(
+                    {"error": "群聊识图功能已关闭"}, ensure_ascii=False
+                )
+            conversation = str(conversation or "").strip()
+            try:
+                message_id_value = int(message_id)
+            except (TypeError, ValueError):
+                return json.dumps({"error": "message_id 必须是数字"}, ensure_ascii=False)
+            if message_id_value <= 0:
+                return json.dumps(
+                    {"error": "message_id 缺失；先用 read_conversation_messages 找到带图消息的 id"},
+                    ensure_ascii=False,
+                )
+            if not conversation:
+                return json.dumps(
+                    {"error": "conversation 缺失；先用 list_conversations 拿到会话 umo"},
+                    ensure_ascii=False,
+                )
+            row = self.resident.store.rows(
+                "SELECT platform_id,kind,conversation_id,message_id FROM activity_messages WHERE id=?",
+                (message_id_value,),
+            )
+            if not row or not row[0]["message_id"]:
+                return json.dumps(
+                    {"error": "找不到这条消息，或该消息没有可留底的图片"},
+                    ensure_ascii=False,
+                )
+            record = row[0]
+            expected_umo = (
+                f"{record['platform_id']}:{'GroupMessage' if record['kind'] == 'group' else 'FriendMessage'}:{record['conversation_id']}"
+            )
+            if expected_umo != conversation:
+                return json.dumps(
+                    {"error": "这条记录不属于你指定的会话，请用该会话自己的 id"},
+                    ensure_ascii=False,
+                )
+            answer = await self.resident.vision.read_image(
+                conversation, record["message_id"], index, str(question or "")
+            )
+            return json.dumps({"description": answer}, ensure_ascii=False)
+        except Exception as exc:
+            logger.warning("[%s] 查看图片失败: %s", DISPLAY_NAME, exc)
+            return json.dumps({"error": "查看图片时出错"}, ensure_ascii=False)
 
     def _capability_menu(self, tool_names: set[str] | None = None) -> str:
         """只介绍本轮实际挂载的能力，各自的提示开关仍然生效。"""

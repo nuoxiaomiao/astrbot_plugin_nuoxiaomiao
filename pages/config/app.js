@@ -222,6 +222,33 @@
     ] }
   ];
   GROUPS.push({ id: 'resident', title: '自主运行与状态', note: '查看真实运行回执、能力联动、信箱与风格提案。下方管理操作即时生效，配置开关仍需保存。', sections: [feature('state', '自主状态', '', ['resident_state_enabled'])] });
+  GROUPS.push({ id: 'shared_memory', title: '共享记忆与信箱', note: '跨会话主脑、未读信箱、话题概括与群聊识图。全部默认关闭，开启后生效。', sections: [
+    feature('master', '全局主脑共享记忆', '所有会话共享同一个主脑会话的连续记忆；并发的聊天回合串行持锁。', ['shared_memory_enabled'], [
+      section('target', '主脑会话', '显式填写优先；留空且开启自动绑定时，首次管理员私聊自动绑定。', ['master_umo', 'master_auto_bind'])
+    ], ['shared_memory_enabled']),
+    feature('inbox', '未读信箱分流', '群里未点名、未命中关键词的普通消息静默进信箱，不再回复；点名时仍即时回复。', ['unread_inbox_enabled'], [
+      section('scope', '在哪些群启用', '名单留空表示不限制；群排除名单优先。', ['inbox_group_whitelist', 'inbox_group_blacklist'])
+    ], ['unread_inbox_enabled']),
+    feature('notice', '点名通知卡', '@ 或关键词唤醒时注入未读情况、近期话题与最近消息，并标记当前会话已读。', ['mention_notice_enabled'], [
+      section('detail', '通知卡内容', '', ['mention_notice_limit'])
+    ], ['mention_notice_enabled']),
+    feature('topic', '话题概括', '轻量模型把一段未读聊天压成一句话题，注入会话清单与点名通知卡。', ['topic_summary_enabled'], [
+      section('model', '使用哪个模型', '留空使用会话默认模型。', ['topic_light_provider_id']),
+      section('trigger', '什么时候概括', '', ['topic_min_unread', 'topic_cooldown_seconds']),
+      section('advanced', '高级设置', '话题长度、分段与超时。', [], true, [
+        section('length', '话题长度', '', ['topic_max_chars', 'topic_line_max_chars']),
+        section('segments', '分段与超时', '', ['topic_segment_msg_count', 'topic_segment_backfill_max', 'topic_timeout_seconds'])
+      ])
+    ], ['topic_summary_enabled']),
+    feature('vision', '群聊识图', '群里发来的图片被留底并在后台自动转述，模型可用 read_image 工具查看任意一张图。', ['vision_enabled'], [
+      section('model', '使用哪些模型', '每行一个模型 ID，按顺序回退；留空使用 AstrBot 默认识图模型。', ['vision_provider_ids']),
+      section('retention', '留底与缓存', '', ['image_keep_days', 'vision_cache_ttl_days']),
+      section('advanced', '高级设置', '留底张数与描述长度。', [], true, [
+        section('limits', '数量与长度', '', ['vision_image_max', 'vision_brief_max_chars', 'vision_read_max_chars']),
+        section('timeout', '超时', '', ['vision_timeout_seconds'])
+      ])
+    ], ['vision_enabled'])
+  ] });
   function fieldPath(key) {
     var target = REFERENCE_KEYS.indexOf(key) >= 0 ? '@reference' : key, found = null;
     GROUPS.some(function (group) {
@@ -282,6 +309,11 @@
       if (/^proactive_silent_wake_|^proactive_judge_provider_id$/.test(key) && key !== 'proactive_silent_wake_enabled' && (!state.proactive_silent_wake_enabled || state.proactive_silent_wake_daily_budget === 0)) return '静默自醒关闭或日预算为 0，这项暂不生效。';
       if (['resident_extra_tools', 'proactive_silent_wake_tool_plugins', 'proactive_silent_wake_max_steps'].indexOf(key) >= 0 && !state.proactive_silent_wake_allow_tools) return '自醒未允许调用工具，这项暂不使用。';
       if (key === 'tool_call_prompt' && !state.tool_call_prompt_enabled) return '自定义工具提示关闭，这段文案暂不生效。';
+      if (/^master_/.test(key) && key !== 'shared_memory_enabled' && !state.shared_memory_enabled) return '全局主脑共享记忆关闭；可以先编辑，开启后生效。';
+      if (/^inbox_group_/.test(key) && !state.unread_inbox_enabled) return '未读信箱分流关闭，群名单暂不生效。';
+      if (key === 'mention_notice_limit' && !state.mention_notice_enabled) return '点名通知卡关闭，这项暂不生效。';
+      if (/^topic_/.test(key) && key !== 'topic_summary_enabled' && !state.topic_summary_enabled) return '话题概括关闭；可以先编辑，开启后生效。';
+      if (/^vision_|^image_keep_days$/.test(key) && key !== 'vision_enabled' && !state.vision_enabled) return '群聊识图关闭；可以先编辑，开启后生效。';
       return '';
     }
     function showToast(text) { $('toast').textContent = text; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(function () { $('toast').hidden = true; }, 5000); }

@@ -872,5 +872,250 @@
       "max": 100000000,
       "step": 1000
     }
+  },
+  "shared_memory_enabled": {
+    "description": "【共享记忆与信箱】全局主脑共享记忆",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后所有会话共享同一个主脑会话的连续记忆，跨群、跨私聊不断片；并发的聊天回合会串行持锁，防止历史被覆盖。默认关闭。",
+    "group": "共享记忆与信箱"
+  },
+  "master_umo": {
+    "description": "【共享记忆与信箱】主脑会话",
+    "type": "string",
+    "default": "",
+    "hint": "完整的会话 UMO，如 napcat:GroupMessage:12345。留空且开启自动绑定时，会在你与管理员第一次私聊时自动绑定。",
+    "group": "共享记忆与信箱"
+  },
+  "master_auto_bind": {
+    "description": "【共享记忆与信箱】自动绑定主脑",
+    "type": "bool",
+    "default": true,
+    "hint": "主脑会话留空时，首次收到管理员私聊消息自动把该会话绑定为主脑并持久化。",
+    "group": "共享记忆与信箱"
+  },
+  "unread_inbox_enabled": {
+    "description": "【共享记忆与信箱】未读信箱分流",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后，群里未 @ 你、未命中关键词的普通消息不再回复，静默收进未读信箱；点名或关键词唤醒时仍即时回复。默认关闭。",
+    "group": "共享记忆与信箱"
+  },
+  "inbox_group_whitelist": {
+    "description": "【共享记忆与信箱】信箱分流的群（白名单）",
+    "type": "list",
+    "default": [],
+    "hint": "填群号或群名，每行一项。非空时只在名单内的群启用信箱分流；留空 = 不限制（黑名单优先）。",
+    "group": "共享记忆与信箱"
+  },
+  "inbox_group_blacklist": {
+    "description": "【共享记忆与信箱】信箱分流的群（黑名单）",
+    "type": "list",
+    "default": [],
+    "hint": "填群号或群名，每行一项。名单内的群不启用信箱分流，优先级高于白名单。",
+    "group": "共享记忆与信箱"
+  },
+  "mention_notice_enabled": {
+    "description": "【共享记忆与信箱】点名通知卡",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后，@ 或关键词唤醒时在提示中注入该会话的未读情况、近期话题与最近消息，并把当前会话标记已读。默认关闭。",
+    "group": "共享记忆与信箱"
+  },
+  "mention_notice_limit": {
+    "description": "【共享记忆与信箱】通知卡消息条数",
+    "type": "int",
+    "default": 20,
+    "hint": "点名通知卡最多带多少条最近未读消息。",
+    "group": "共享记忆与信箱",
+    "slider": {
+      "min": 1,
+      "max": 30,
+      "step": 1
+    }
+  },
+  "topic_summary_enabled": {
+    "description": "【共享记忆与信箱】话题概括",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后，轻量模型把一段未读聊天压成一句话题，注入会话清单与点名通知卡。默认关闭。",
+    "group": "共享记忆与信箱"
+  },
+  "topic_light_provider_id": {
+    "description": "【共享记忆与信箱】话题模型",
+    "type": "string",
+    "default": "",
+    "hint": "已加载的聊天模型 ID。留空使用会话默认模型；指定模型不可用时本轮跳过，不自动换模型。",
+    "group": "共享记忆与信箱"
+  },
+  "topic_min_unread": {
+    "description": "【共享记忆与信箱】话题最少未读条数",
+    "type": "int",
+    "default": 5,
+    "hint": "未读不足这个条数不触发话题概括。",
+    "group": "共享记忆与信箱",
+    "slider": {
+      "min": 1,
+      "max": 50,
+      "step": 1
+    }
+  },
+  "topic_cooldown_seconds": {
+    "description": "【共享记忆与信箱】话题概括冷却（秒）",
+    "type": "int",
+    "default": 180,
+    "hint": "同一会话两次话题概括之间至少隔这么久，防止高频群反复烧模型。",
+    "group": "共享记忆与信箱",
+    "slider": {
+      "min": 0,
+      "max": 3600,
+      "step": 30
+    }
+  },
+  "topic_max_chars": {
+    "description": "【共享记忆与信箱】话题最长字数",
+    "type": "int",
+    "default": 24,
+    "hint": "话题一句话最多多少字。",
+    "group": "共享记忆与信箱",
+    "slider": {
+      "min": 4,
+      "max": 60,
+      "step": 1
+    }
+  },
+  "topic_line_max_chars": {
+    "description": "【共享记忆与信箱】单条消息截断字数",
+    "type": "int",
+    "default": 120,
+    "hint": "喂给话题模型时，单条消息超过这个字数就截断。",
+    "group": "共享记忆与信箱",
+    "slider": {
+      "min": 20,
+      "max": 300,
+      "step": 10
+    }
+  },
+  "topic_timeout_seconds": {
+    "description": "【共享记忆与信箱】话题概括超时（秒）",
+    "type": "float",
+    "default": 10,
+    "hint": "话题模型超过这个时间没返回就放弃本轮概括。",
+    "group": "共享记忆与信箱",
+    "slider": {
+      "min": 1,
+      "max": 60,
+      "step": 1
+    }
+  },
+  "topic_segment_msg_count": {
+    "description": "【共享记忆与信箱】每个话题分段条数",
+    "type": "int",
+    "default": 25,
+    "hint": "攒够这么多条未读才成一段话题。",
+    "group": "共享记忆与信箱",
+    "slider": {
+      "min": 5,
+      "max": 200,
+      "step": 5
+    }
+  },
+  "topic_segment_backfill_max": {
+    "description": "【共享记忆与信箱】话题补段条数",
+    "type": "int",
+    "default": 5,
+    "hint": "概括时往前补多少条旧消息作上下文。",
+    "group": "共享记忆与信箱",
+    "slider": {
+      "min": 0,
+      "max": 50,
+      "step": 1
+    }
+  },
+  "vision_enabled": {
+    "description": "【共享记忆与信箱】群聊识图",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后，群里发来的图片被留底并在后台自动转述，模型可用 read_image 工具按会话与消息查看任意一张图。默认关闭。",
+    "group": "共享记忆与信箱"
+  },
+  "vision_provider_ids": {
+    "description": "【共享记忆与信箱】识图模型链",
+    "type": "list",
+    "default": [],
+    "hint": "已加载的识图模型 ID，每行一项，按顺序回退；留空使用 AstrBot 主对话的默认识图模型。",
+    "group": "共享记忆与信箱"
+  },
+  "image_keep_days": {
+    "description": "【共享记忆与信箱】图片留底天数",
+    "type": "int",
+    "default": 3,
+    "hint": "留底的群图超过这个天数自动清理。",
+    "group": "共享记忆与信箱",
+    "slider": {
+      "min": 0,
+      "max": 90,
+      "step": 1
+    }
+  },
+  "vision_image_max": {
+    "description": "【共享记忆与信箱】单条消息最多留底张数",
+    "type": "int",
+    "default": 6,
+    "hint": "一条消息里的图片最多留底这么多张。",
+    "group": "共享记忆与信箱",
+    "slider": {
+      "min": 1,
+      "max": 20,
+      "step": 1
+    }
+  },
+  "vision_brief_max_chars": {
+    "description": "【共享记忆与信箱】群图自动转述长度",
+    "type": "int",
+    "default": 80,
+    "hint": "后台自动转述的群图描述最长字数。",
+    "group": "共享记忆与信箱",
+    "slider": {
+      "min": 10,
+      "max": 300,
+      "step": 10
+    }
+  },
+  "vision_read_max_chars": {
+    "description": "【共享记忆与信箱】read_image 回答长度",
+    "type": "int",
+    "default": 500,
+    "hint": "read_image 工具返回的描述最长字数。",
+    "group": "共享记忆与信箱",
+    "slider": {
+      "min": 50,
+      "max": 2000,
+      "step": 50
+    }
+  },
+  "vision_timeout_seconds": {
+    "description": "【共享记忆与信箱】识图超时（秒）",
+    "type": "float",
+    "default": 60,
+    "hint": "单次识图调用超过这个时间就放弃。",
+    "group": "共享记忆与信箱",
+    "slider": {
+      "min": 3,
+      "max": 300,
+      "step": 3
+    }
+  },
+  "vision_cache_ttl_days": {
+    "description": "【共享记忆与信箱】描述缓存天数",
+    "type": "int",
+    "default": 30,
+    "hint": "同一张图的描述缓存保留天数。",
+    "group": "共享记忆与信箱",
+    "slider": {
+      "min": 1,
+      "max": 365,
+      "step": 1
+    }
   }
 }

@@ -10,8 +10,8 @@ const defaults = Object.fromEntries(Object.entries(schema).map(([key, spec]) => 
 const copy = value => JSON.parse(JSON.stringify(value));
 
 test('all active schema fields have one navigation home; reserved delay is omitted', () => {
-  assert.equal(ui.GROUPS.length, 9);
-  assert.deepEqual(ui.GROUPS.map(group => group.title), ['总览', '消息合并', '回复节奏', '拦截与互动', '聊天记录与参考', '主动消息', '自醒', '高级', '自主运行与状态']);
+  assert.equal(ui.GROUPS.length, 10);
+  assert.deepEqual(ui.GROUPS.map(group => group.title), ['总览', '消息合并', '回复节奏', '拦截与互动', '聊天记录与参考', '主动消息', '自醒', '高级', '自主运行与状态', '共享记忆与信箱']);
   const collect = section => (section.fields || []).concat((section.children || []).flatMap(collect));
   const grouped = ui.GROUPS.flatMap(group => group.sections.flatMap(section => {
     const fields = collect(section);
@@ -182,9 +182,9 @@ function openAdvanced(page, key) {
   return details;
 }
 
-test('page renders nine navigation groups, visible primary switches, time and provider controls', async () => {
+test('page renders ten navigation groups, visible primary switches, time and provider controls', async () => {
   const page = fixture({proactive_judge_provider_id: 'removed'}); await settled();
-  assert.equal(page.document.querySelectorAll('.nav-button').length, 9);
+  assert.equal(page.document.querySelectorAll('.nav-button').length, 10);
   assert.equal(page.get('timezone').textContent, '机器人时区：Asia/Shanghai');
   assert.ok(page.get('diagnostics').children.length);
   page.navigate('debounce');
@@ -200,6 +200,25 @@ test('page renders nine navigation groups, visible primary switches, time and pr
   assert.equal(provider.tagName, 'SELECT'); assert.equal(provider.value, 'removed');
   assert.ok(provider.children.some(option => option.value === 'removed'));
   assert.ok(provider.children.some(option => option.value === 'available'));
+});
+
+test('shared memory group shows feature cards and field placement', async () => {
+  const page = fixture(); await settled();
+  page.navigate('shared_memory');
+  for (const feature of ['master', 'inbox', 'notice', 'topic', 'vision']) {
+    assert.ok(page.get('feature-shared_memory-' + feature), `feature ${feature} exists`);
+  }
+  for (const [feature, fields] of [
+    ['master', ['shared_memory_enabled', 'master_umo', 'master_auto_bind']],
+    ['inbox', ['unread_inbox_enabled', 'inbox_group_whitelist', 'inbox_group_blacklist']],
+    ['notice', ['mention_notice_enabled', 'mention_notice_limit']],
+    ['topic', ['topic_summary_enabled', 'topic_light_provider_id', 'topic_min_unread', 'topic_cooldown_seconds']],
+    ['vision', ['vision_enabled', 'vision_provider_ids', 'image_keep_days', 'vision_timeout_seconds']],
+  ]) {
+    const card = page.get('feature-shared_memory-' + feature);
+    assert.equal(card.tagName, 'SECTION');
+    for (const key of fields) assert.equal(page.get('field-' + key).closest('.feature-card'), card, key);
+  }
 });
 
 test('each interaction and record function contains its own related parameters', async () => {
