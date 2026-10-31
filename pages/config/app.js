@@ -1,4 +1,10 @@
-/* The schema owns defaults and native field text; this page owns layout and labels. */
+/* 糯小喵配置中心 — 重写版（schema 驱动，草稿/保存/基线状态机）。
+ * 设计约束：
+ *  - 纯静态文件，无构建步骤、无外部依赖，由 AstrBot 直接服务。
+ *  - 通过 window.AstrBotPluginPage 桥接（apiGet/apiPost/ready）。
+ *  - 导出纯函数供 tests/test_config_ui.js 使用（UMD）。
+ * 结构分区：utils → bridge → schema → groups → state → controls → render → io → app。
+ */
 (function (root, factory) {
   'use strict';
   var api = factory();
@@ -7,14 +13,13 @@
 })(typeof window !== 'undefined' ? window : null, function () {
   'use strict';
 
+  /* ============================ 常量 ============================ */
   var CORE_PLUGIN = 'astrbot_plugin_nuoxiaomiao';
   var REFERENCE_KEYS = ['activity_prefetch_enabled', 'capability_context_digest'];
   var WAKE_KEYS = ['proactive_silent_wake_floor_minutes', 'proactive_silent_wake_target_mean_minutes', 'proactive_silent_wake_ceil_minutes'];
   var TIME_KEYS = ['proactive_quiet_hours_start', 'proactive_quiet_hours_end'];
   var OMITTED_KEYS = ['proactive_min_delay_minutes', 'proactive_silent_wake_tool_plugins', 'resident_tools_migrated'];
-  function clone(value) { return value === undefined ? undefined : JSON.parse(JSON.stringify(value)); }
-  function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
-  function own(obj, key) { return Object.prototype.hasOwnProperty.call(obj || {}, key); }
+  var TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
   var FIELD_TITLES = {
     debounce_enabled: '启用消息合并',
     debounce_group_enabled: '合并群聊中的连续消息',
@@ -36,11 +41,24 @@
     proactive_silent_wake_max_steps: '每次自醒最多执行几步',
     resident_extra_tools: '自醒可以使用的额外工具'
   };
+
+  /* ============================ utils ============================ */
+  function clone(value) { return value === undefined ? undefined : JSON.parse(JSON.stringify(value)); }
+  function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+  function own(obj, key) { return Object.prototype.hasOwnProperty.call(obj || {}, key); }
   function fieldTitle(spec, key) { return FIELD_TITLES[key] || String((spec || {}).description || key).replace(/^【[^】]+】\s*/, ''); }
   function parseList(value) {
     var list = Array.isArray(value) ? value : String(value || '').split(/[\n,，、;；]+/);
     return Array.from(new Set(list.map(function (x) { return String(x).trim(); }).filter(Boolean)));
   }
+  function valueText(value) {
+    return value === '' ? '留空'
+      : Array.isArray(value) ? value.length ? value.join('、') : '空名单'
+      : value === true ? '开启' : value === false ? '关闭' : String(value);
+  }
+  function isScalarType(type) { return type === 'bool' || type === 'int' || type === 'float' || type === 'string' || type === 'text'; }
+
+  /* ============================ 引用/工具模式（纯函数） ============================ */
   function referenceMode(value) {
     return value.capability_context_digest ? 'background' : value.activity_prefetch_enabled ? 'prefetch' : 'tools';
   }
@@ -56,13 +74,14 @@
     if (mode === 'core') return [CORE_PLUGIN];
     return [CORE_PLUGIN].concat(parseList(names).filter(function (name) { return name !== CORE_PLUGIN && name !== '（内置工具）'; }));
   }
+
+  /* ============================ 草稿状态机（纯函数） ============================ */
   function dirtyKeys(state, baseline, schema) {
     return Object.keys(schema).filter(function (key) { return OMITTED_KEYS.indexOf(key) < 0 && !same(state[key], baseline[key]); });
   }
   function buildPatch(state, baseline, schema) {
     var result = {};
     dirtyKeys(state, baseline, schema).forEach(function (key) { result[key] = clone(state[key]); });
-    // Normalize a legacy both-on configuration only when the reference mode is edited.
     if (REFERENCE_KEYS.some(function (key) { return own(result, key); })) {
       Object.assign(result, referenceValues(referenceMode(state)));
     }
@@ -87,9 +106,8 @@
         else if (spec.type === 'int' && !Number.isInteger(value)) errors[key] = '请输入整数。';
         else if (spec.slider && (value < spec.slider.min || value > spec.slider.max)) errors[key] = '请输入 ' + spec.slider.min + ' 到 ' + spec.slider.max + ' 之间的数值。';
       }
-      if (TIME_KEYS.indexOf(key) >= 0 && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(value))) errors[key] = '请选择 00:00 到 23:59 的时间。';
+      if (TIME_KEYS.indexOf(key) >= 0 && !TIME_RE.test(String(value))) errors[key] = '请选择 00:00 到 23:59 的时间。';
     });
-    // The server validates the merged config, even for an empty default snapshot.
     if (WAKE_KEYS.every(function (key) { return own(state, key); })) {
       var floor = state[WAKE_KEYS[0]], mean = state[WAKE_KEYS[1]], ceil = state[WAKE_KEYS[2]];
       if (!(ceil >= floor + 2 && mean >= floor + 1 && mean <= ceil - 1)) WAKE_KEYS.forEach(function (key) { errors[key] = '上限至少比下限多 2 分钟；平均间隔须在下限 + 1 与上限 − 1 之间。'; });
@@ -103,6 +121,71 @@
     if (value.response) return errorFields(value.response);
     return {};
   }
+
+  /* ============================ 导入/导出/diff（纯函数） ============================ */
+  /** 导出：把草稿中 schema 存在的键序列化为 JSON 文本（用于复制）。 */
+  function exportConfig(state, schema) {
+    var out = {};
+    Object.keys(schema).forEach(function (key) {
+      if (own(state, key)) out[key] = clone(state[key]);
+    });
+    return JSON.stringify(out, null, 2);
+  }
+  /** 导入：解析 JSON 文本，只接受 schema 已知键并按类型归一；返回 {values, errors}。 */
+  function importConfig(text, schema, defaults) {
+    var errors = {}, values = {};
+    var parsed;
+    try {
+      parsed = JSON.parse(String(text || ''));
+    } catch (exc) {
+      return { values: {}, errors: { _global: 'JSON 无法解析：' + exc.message } };
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { values: {}, errors: { _global: '需要一段 JSON 对象（以 { 开头）。' } };
+    }
+    Object.keys(parsed).forEach(function (key) {
+      if (!own(schema, key)) return; // 未知键静默忽略
+      var spec = schema[key], raw = parsed[key];
+      if (spec.type === 'bool') {
+        if (raw === true || raw === 'true' || raw === 1 || raw === '1' || raw === 'on') values[key] = true;
+        else if (raw === false || raw === 'false' || raw === 0 || raw === '0' || raw === 'off') values[key] = false;
+        else errors[key] = '需要 true 或 false。';
+      } else if (spec.type === 'int' || spec.type === 'float') {
+        var num = Number(raw);
+        if (raw !== '' && raw !== null && typeof raw !== 'boolean' && Number.isFinite(num)) {
+          values[key] = spec.type === 'int' ? Math.round(num) : num;
+          if (spec.slider && (num < spec.slider.min || num > spec.slider.max)) errors[key] = '应在 ' + spec.slider.min + ' 到 ' + spec.slider.max + ' 之间。';
+        } else if (raw === '' || raw === null) {
+          values[key] = own(defaults, key) ? clone(defaults[key]) : (spec.type === 'int' ? 0 : 0);
+        } else errors[key] = '需要数字。';
+      } else if (spec.type === 'list') {
+        values[key] = parseList(Array.isArray(raw) ? raw : String(raw));
+      } else if (spec.type === 'string' || spec.type === 'text') {
+        values[key] = raw === null || raw === undefined ? '' : String(raw);
+      } else if (spec.type === 'time') {
+        var t = String(raw);
+        values[key] = TIME_RE.test(t) ? t : errors[key] = '需要 00:00–23:59 的时间。';
+      } else {
+        values[key] = clone(raw);
+      }
+    });
+    return { values: values, errors: errors };
+  }
+  /** 生成待保存项的 diff 列表：{key, title, old, new, listChanged}。 */
+  function buildDiffList(state, baseline, schema) {
+    return dirtyKeys(state, baseline, schema).map(function (key) {
+      var spec = schema[key] || {}, oldValue = clone(baseline[key]), newValue = clone(state[key]);
+      return {
+        key: key,
+        title: fieldTitle(spec, key),
+        old: valueText(oldValue),
+        new: valueText(newValue),
+        listChanged: spec.type === 'list' && !same(oldValue, newValue)
+      };
+    });
+  }
+
+  /* ============================ 分组定义（与运行时字段归属一致） ============================ */
   function section(id, title, note, fields, advanced, children) { return { id: id, title: title, note: note, fields: fields || [], advanced: !!advanced, children: children || [] }; }
   function feature(id, title, note, fields, children, enabledKeys) {
     return Object.assign(section(id, title, note, fields, false, children), { feature: true, enabledKeys: enabledKeys || [] });
@@ -249,6 +332,8 @@
       ])
     ], ['vision_enabled'])
   ] });
+
+  /* ============================ 字段归属 / 搜索 ============================ */
   function fieldPath(key) {
     var target = REFERENCE_KEYS.indexOf(key) >= 0 ? '@reference' : key, found = null;
     GROUPS.some(function (group) {
@@ -276,6 +361,7 @@
     return null;
   }
 
+  /* ============================ 页面应用 ============================ */
   function mount(win) {
     var doc = win.document;
     var schema = {}, state = {}, baseline = {}, defaults = {}, userDefault = null;
@@ -284,14 +370,16 @@
     var fieldErrors = {}, toastTimer = null, selectedToolMode = null;
     var expanded = {}, editingDisabled = {}, revealedFields = {};
     var featureViews = [], sectionViews = [];
+
     function $(id) { return doc.getElementById(id); }
     function node(tag, cls, text) { var n = doc.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = String(text); return n; }
     function button(text, handler, cls) { var n = node('button', cls, text); n.type = 'button'; n.addEventListener('click', handler); return n; }
-    function valueText(value) { return value === '' ? '留空' : Array.isArray(value) ? value.length ? value.join('、') : '空名单' : value === true ? '开启' : value === false ? '关闭' : String(value); }
+    function showToast(text) { $('toast').textContent = text; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(function () { $('toast').hidden = true; }, 5000); }
     function defaultOf(key, factory) { return !factory && userDefault && own(userDefault, key) ? userDefault[key] : defaults[key]; }
+
     function reason(key) {
       if (key === 'enabled') return '';
-      if (!state.enabled) return ''; // The page banner explains the global switch once.
+      if (!state.enabled) return '';
       if (/^debounce_|^merge_|^force_wake_prefix$/.test(key) && key !== 'debounce_enabled' && !state.debounce_enabled) return '防抖合并关闭；可以先编辑，开启后生效。';
       if (['debounce_fast_idle_seconds', 'debounce_slow_idle_seconds', 'debounce_wake_idle_seconds', 'debounce_long_chars', 'debounce_end_punctuation'].indexOf(key) >= 0 && !state.debounce_dynamic_enabled) return '当前使用固定等待，这项暂不参与判定。';
       if (key === 'merge_idle_seconds' && state.debounce_dynamic_enabled) return '当前按内容动态等待，这项暂不使用。';
@@ -316,7 +404,7 @@
       if (/^vision_|^image_keep_days$/.test(key) && key !== 'vision_enabled' && !state.vision_enabled) return '群聊识图关闭；可以先编辑，开启后生效。';
       return '';
     }
-    function showToast(text) { $('toast').textContent = text; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(function () { $('toast').hidden = true; }, 5000); }
+
     function onChange(key, value) {
       state[key] = value; delete fieldErrors[key];
       if (WAKE_KEYS.indexOf(key) >= 0) WAKE_KEYS.forEach(function (k) { delete fieldErrors[k]; });
@@ -329,6 +417,8 @@
       });
       refresh();
     }
+
+    /* ---------- 控件构建 ---------- */
     function labelInput(input, key) { input.id = 'input-' + key; input.setAttribute('aria-label', fieldTitle(schema[key], key)); input.setAttribute('aria-describedby', 'hint-' + key + ' reason-' + key + ' error-' + key); return input; }
     function optionsControl(name, value, options, change) {
       var wrap = node('div', 'mode-options');
@@ -441,6 +531,9 @@
       var top = node('div', 'field-top'), copy = node('div', 'field-copy'), label = node('label', 'field-label', fieldTitle(spec, key)); label.htmlFor = 'input-' + key; copy.appendChild(label);
       var hint = node('p', 'field-hint', spec.hint || ''); hint.id = 'hint-' + key; copy.appendChild(hint);
       var actions = node('div', 'field-actions');
+      // 复制当前值（新增能力）。
+      var copyBtn = button('复制', function () { copyToClipboard(win, valueText(state[key])); showToast('已复制「' + fieldTitle(spec, key) + '」的值。'); }, 'restore-field copy-field');
+      copyBtn.title = '复制当前值：' + valueText(state[key]); actions.appendChild(copyBtn);
       var reset = button('恢复' + (userDefault && own(userDefault, key) ? '我的默认' : '出厂默认'), function () { state[key] = clone(defaultOf(key)); delete fieldErrors[key]; if (key === 'proactive_silent_wake_tool_plugins') selectedToolMode = null; renderPane(); refresh(); }, 'restore-field'); reset.title = valueText(defaultOf(key)); actions.appendChild(reset); copy.appendChild(actions);
       top.appendChild(copy); var control = node('div', 'field-control'); control.appendChild(buildControl(key, spec));
       if (isBlock) { row.appendChild(top); row.appendChild(control); } else { top.appendChild(control); row.appendChild(top); }
@@ -471,24 +564,25 @@
       if (s.id === 'wake' && !state.proactive_silent_wake_daily_budget) return '每天自醒次数为 0，暂不自醒；增加次数并保存后生效。';
       return '';
     }
+
+    /* ---------- 渲染 ---------- */
     function renderSection(s, group, filter, ancestors) {
       var path = (ancestors || []).concat(s.id), id = group.id + ':' + path.join(':');
       var keys = s.fields.filter(function (key) { return visibleKey(key, s); });
       var children = s.children.map(function (child) { return renderSection(child, group, filter, path); }).filter(Boolean);
       if (!keys.length && !children.length) return null;
-      // Keep the function's controls as context when searching its parameters.
       if (s.feature) keys = s.fields.filter(function (key) { return key === '@reference' || (schema[key] && OMITTED_KEYS.indexOf(key) < 0); });
       var el = node(s.advanced ? 'details' : 'section', s.feature ? 'feature-card' : s.advanced ? 'section advanced-section' : 'subsection');
       el.dataset.section = id;
       var body, view = { el: el, spec: s, keys: sectionFields(s), forced: false };
       if (s.feature) {
         el.id = 'feature-' + group.id + '-' + s.id;
-        var heading = node('div', 'feature-heading'), copy = node('div'), title = node('h2', 'feature-title', s.title);
+        var heading = node('div', 'feature-heading'), copyEl = node('div'), title = node('h2', 'feature-title', s.title);
         title.id = el.id + '-title'; el.setAttribute('aria-labelledby', title.id);
-        if (filter) copy.appendChild(node('p', 'subsection-note', group.title));
-        copy.appendChild(title);
-        if (s.note) copy.appendChild(node('p', 'feature-note', s.note));
-        heading.appendChild(copy);
+        if (filter) copyEl.appendChild(node('p', 'subsection-note', group.title));
+        copyEl.appendChild(title);
+        if (s.note) copyEl.appendChild(node('p', 'feature-note', s.note));
+        heading.appendChild(copyEl);
         var pending = node('span', 'feature-pending'); pending.hidden = true; heading.appendChild(pending); el.appendChild(heading);
         var switches = node('div', 'feature-switches'); keys.forEach(function (key) { var row = field(key); if (row) switches.appendChild(row); });
         if (keys.length) el.appendChild(switches);
@@ -509,7 +603,6 @@
         body = node('div', 'section-body'); el.appendChild(body);
         view.lastOpen = el.open;
         el.addEventListener('toggle', function () {
-          // Native toggle events are queued, including events from programmatic opens.
           if (sectionViews.indexOf(view) < 0 || view.lastOpen === el.open) return;
           view.lastOpen = el.open;
           if (filter || view.forced) return;
@@ -529,7 +622,6 @@
       doc.querySelectorAll('.field[data-key]').forEach(function (row) {
         row.hidden = !forceField(row.dataset.key) && !conditionVisible(row.dataset.key);
       });
-      // Children are registered before their parents so empty subgroups disappear too.
       sectionViews.forEach(function (view) {
         if (view.spec.feature) return;
         view.el.hidden = !Array.from(view.el.querySelectorAll('.field')).some(function (row) { return !row.hidden; });
@@ -546,7 +638,6 @@
         view.edit.hidden = !disabled || !view.spec.children.length || !!query || pendingOnly || view.keys.some(hasFieldError);
         view.edit.textContent = show ? '收起关闭功能的设置' : '编辑关闭功能的设置';
         view.edit.setAttribute('aria-expanded', show ? 'true' : 'false');
-        // Clicking "收起" also ends a temporary reveal from a diagnostic jump.
         view.notice.textContent = featureReason(view.spec); view.notice.hidden = !view.notice.textContent;
         var count = view.keys.flatMap(configKeys).filter(function (key) { return dirty.indexOf(key) >= 0; }).length;
         view.pending.textContent = '待保存 ' + count + ' 项'; view.pending.hidden = !count;
@@ -613,6 +704,32 @@
         card.querySelector('.overview-summary').textContent = summaryFor(groupOfTitle(id))[1];
       });
     }
+    function renderDiffList() {
+      var diffs = buildDiffList(state, baseline, schema);
+      if (!diffs.length) return null;
+      var wrap = node('section', 'diff-panel');
+      wrap.appendChild(node('h2', 'diff-title', '待保存的修改'));
+      wrap.appendChild(node('p', 'field-hint', '以下是你尚未保存的改动。点击条目跳到对应设置；点「保存修改」统一生效。'));
+      var list = node('ul', 'diff-list');
+      diffs.forEach(function (item) {
+        var li = node('li', 'diff-item');
+        var head = node('button', 'diff-head'); head.type = 'button';
+        head.appendChild(node('strong', 'diff-label', item.title));
+        head.appendChild(node('code', '', item.key));
+        head.addEventListener('click', function () { focusField(item.key); });
+        li.appendChild(head);
+        var body = node('div', 'diff-body');
+        var oldNode = node('div', 'diff-side diff-old'), newNodes = node('div', 'diff-side diff-new');
+        oldNode.appendChild(node('small', '', '当前'));
+        oldNode.appendChild(node('pre', '', item.old === '' ? '（空）' : item.old));
+        newNodes.appendChild(node('small', '', '新值'));
+        newNodes.appendChild(node('pre', '', item.new === '' ? '（空）' : item.new));
+        body.appendChild(oldNode); body.appendChild(newNodes); li.appendChild(body);
+        list.appendChild(li);
+      });
+      wrap.appendChild(list);
+      return wrap;
+    }
     function renderPane() {
       var pane = $('pane'); pane.replaceChildren();
       featureViews = []; sectionViews = [];
@@ -623,6 +740,11 @@
         var lead = node('div', 'overview-lead'); if (schema.enabled) lead.appendChild(field('enabled')); pane.appendChild(lead);
         pane.appendChild(node('p', 'field-hint', '以下摘要展示当前草稿。待保存的修改不会立即改变运行行为。'));
         var grid = node('div', 'overview-grid'); grid.id = 'overview-grid'; pane.appendChild(grid); renderOverviewStatus(); return;
+      }
+      if (pendingOnly) {
+        // 待保存模式：顶部给出 diff 总览，下面仍按分组展示字段。
+        var diff = renderDiffList();
+        if (diff) pane.appendChild(diff);
       }
       var count = 0;
       GROUPS.filter(function (group) { return filtering || group.id === activeGroup; }).forEach(function (group) {
@@ -677,6 +799,8 @@
     }
     function unwrap(response) { return response && response.data && typeof response.data === 'object' ? response.data : response || {}; }
     function updateMetadata(data) { if (Array.isArray(data.providers)) providers = data.providers; if (Array.isArray(data.tool_plugins)) catalog = data.tool_plugins; if (Array.isArray(data.resident_tools)) residentTools = data.resident_tools; if (Array.isArray(data.diagnostics)) diagnostics = data.diagnostics; if (typeof data.timezone === 'string') timezone = data.timezone; $('timezone').textContent = timezone ? '机器人时区：' + timezone : '机器人时区：未提供'; }
+
+    /* ---------- 保存流程 ---------- */
     async function save(asDefault) {
       if (!loaded || saving) return;
       var snapshot = clone(state), patch = buildPatch(snapshot, baseline, schema);
@@ -688,8 +812,6 @@
         var response = await win.AstrBotPluginPage.apiPost(asDefault ? 'config/default' : 'config', { config: clone(patch), return_validation_errors: true });
         if (response && response.status === 'error') throw response;
         var data = unwrap(response);
-        // The host bridge strips failed response details. This opt-in success
-        // envelope carries validation errors without committing any config.
         if (data.validation_error) throw data;
         var merged = mergeSavedState(state, baseline, snapshot, patch, data.config || {}, schema);
         state = merged.state; baseline = merged.baseline; fieldErrors = {};
@@ -715,21 +837,62 @@
       catch (error) { showToast('删除默认快照失败：' + (error.message || '请重试')); }
       finally { saving = false; refresh(); }
     }
+
+    /* ---------- 导入/导出 ---------- */
+    function openImport() {
+      if (!loaded || !$('import-dialog')) return;
+      $('import-text').value = ''; $('import-error').hidden = true; $('import-error').textContent = '';
+      $('import-dialog').hidden = false; $('import-text').focus();
+    }
+    function closeImport() { if ($('import-dialog')) $('import-dialog').hidden = true; }
+    function applyImport() {
+      var box = $('import-error');
+      if (!box) return;
+      var result = importConfig($('import-text').value, schema, defaults);
+      if (result.errors._global) { box.textContent = result.errors._global; box.hidden = false; return; }
+      var fieldBad = Object.keys(result.errors).filter(function (k) { return k !== '_global'; });
+      if (fieldBad.length) { box.textContent = '部分字段不符合要求，已跳过：' + fieldBad.map(function (k) { return fieldTitle(schema[k], k) + '（' + result.errors[k] + '）'; }).join('；'); box.hidden = false; }
+      var count = Object.keys(result.values).length;
+      if (!count && !fieldBad.length) { box.textContent = '没有识别到任何已知配置项。'; box.hidden = false; return; }
+      Object.assign(state, result.values); fieldErrors = {}; closeImport();
+      showToast('已导入 ' + count + ' 项到草稿，点「保存修改」生效。');
+      renderPane(); refresh();
+    }
+    function doExport() {
+      if (!loaded) return;
+      var text = exportConfig(state, schema);
+      var ok = copyToClipboard(win, text);
+      showToast(ok ? '配置已复制为 JSON（含 ' + Object.keys(schema).length + ' 个字段）。' : '复制失败：请从浏览器控制台手动复制。');
+    }
+
+    /* ---------- 初始化 ---------- */
+    function wire(id, type, fn) { var el = $(id); if (el) el.addEventListener(type, fn); }
     function closeDefaultMenu() { $('default-menu').hidden = true; $('default-menu-btn').setAttribute('aria-expanded', 'false'); }
     function closeSidebar() { $('sidebar').classList.remove('open'); $('drawer-backdrop').hidden = true; }
     function init() {
       try { var theme = win.localStorage.getItem('nxm_config_theme'); if (theme) doc.documentElement.dataset.theme = theme; expanded = JSON.parse(win.localStorage.getItem('nxm_config_expanded') || '{}') || {}; } catch (_) {}
       var nav = $('tabs'); GROUPS.forEach(function (group, index) { var tab = button('', function () { navigate(group.id); }, 'nav-button'); tab.dataset.group = group.id; tab.appendChild(node('span', 'nav-number', String(index + 1).padStart(2, '0'))); tab.appendChild(node('span', '', group.title)); var count = node('span', 'nav-count'); count.hidden = true; tab.appendChild(count); nav.appendChild(tab); });
-      $('save').addEventListener('click', function () { save(false); }); $('save-default').addEventListener('click', function () { save(true); });
-      $('revert').addEventListener('click', function () { if (saving) return; state = clone(baseline); fieldErrors = {}; selectedToolMode = null; renderPane(); refresh(); showToast('已撤销待保存的修改。'); });
-      $('restore-default').addEventListener('click', function () { restoreDefaults(false); }); $('restore-factory').addEventListener('click', function () { restoreDefaults(true); }); $('clear-default').addEventListener('click', clearDefault);
-      $('default-menu-btn').addEventListener('click', function () { var menu = $('default-menu'); menu.hidden = !menu.hidden; $('default-menu-btn').setAttribute('aria-expanded', String(!menu.hidden)); });
-      doc.addEventListener('click', function (event) { if (!event.target.closest('.dropdown')) closeDefaultMenu(); });
-      $('drawer-toggle').addEventListener('click', function () { $('sidebar').classList.add('open'); $('drawer-backdrop').hidden = false; }); $('drawer-close').addEventListener('click', closeSidebar); $('drawer-backdrop').addEventListener('click', closeSidebar);
-      $('theme-toggle').addEventListener('click', function () { var current = doc.documentElement.dataset.theme || (win.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); var next = current === 'dark' ? 'light' : 'dark'; doc.documentElement.dataset.theme = next; try { win.localStorage.setItem('nxm_config_theme', next); } catch (_) {} });
-      $('search').addEventListener('input', function () { query = $('search').value.trim().toLowerCase(); renderPane(); refresh(); }); $('search-clear').addEventListener('click', function () { $('search').value = ''; query = ''; renderPane(); refresh(); });
-      $('pending-only').addEventListener('change', function () { pendingOnly = $('pending-only').checked; renderPane(); refresh(); });
-      doc.addEventListener('keydown', function (event) { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); save(false); } if (event.key === 'Escape') { closeSidebar(); closeDefaultMenu(); } });
+      wire('save', 'click', function () { save(false); });
+      wire('save-default', 'click', function () { save(true); });
+      wire('revert', 'click', function () { if (saving) return; state = clone(baseline); fieldErrors = {}; selectedToolMode = null; renderPane(); refresh(); showToast('已撤销待保存的修改。'); });
+      wire('restore-default', 'click', function () { restoreDefaults(false); });
+      wire('restore-factory', 'click', function () { restoreDefaults(true); });
+      wire('clear-default', 'click', clearDefault);
+      wire('export-config', 'click', doExport);
+      wire('import-config', 'click', openImport);
+      wire('import-apply', 'click', applyImport);
+      wire('import-cancel', 'click', closeImport);
+      wire('import-close', 'click', closeImport);
+      wire('default-menu-btn', 'click', function () { var menu = $('default-menu'); menu.hidden = !menu.hidden; $('default-menu-btn').setAttribute('aria-expanded', String(!menu.hidden)); });
+      doc.addEventListener('click', function (event) { if (!event.target.closest('.dropdown') && !event.target.closest('#import-dialog')) closeDefaultMenu(); });
+      wire('drawer-toggle', 'click', function () { $('sidebar').classList.add('open'); $('drawer-backdrop').hidden = false; });
+      wire('drawer-close', 'click', closeSidebar);
+      wire('drawer-backdrop', 'click', closeSidebar);
+      wire('theme-toggle', 'click', function () { var current = doc.documentElement.dataset.theme || (win.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); var next = current === 'dark' ? 'light' : 'dark'; doc.documentElement.dataset.theme = next; try { win.localStorage.setItem('nxm_config_theme', next); } catch (_) {} });
+      wire('search', 'input', function () { query = $('search').value.trim().toLowerCase(); renderPane(); refresh(); });
+      wire('search-clear', 'click', function () { $('search').value = ''; query = ''; renderPane(); refresh(); });
+      wire('pending-only', 'change', function () { pendingOnly = $('pending-only').checked; renderPane(); refresh(); });
+      doc.addEventListener('keydown', function (event) { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); save(false); } if (event.key === 'Escape') { closeSidebar(); closeDefaultMenu(); closeImport(); } });
       win.addEventListener('beforeunload', function (event) { if (!dirtyKeys(state, baseline, schema).length) return; event.preventDefault(); event.returnValue = ''; });
     }
     async function load() {
@@ -740,7 +903,7 @@
         state = {}; Object.keys(schema).forEach(function (key) { state[key] = clone(own(data.config, key) ? data.config[key] : defaults[key]); }); baseline = clone(state);
         updateMetadata(data); loaded = true; fieldErrors = {}; renderDiagnostics(); renderPane(); refresh(); $('boot').hidden = true; $('app').hidden = false;
       } catch (error) {
-        $('boot').replaceChildren(); $('boot').appendChild(node('strong', '', '配置加载失败')); $('boot').appendChild(node('p', '', error.message || '无法读取配置。')); $('boot').appendChild(button('重新加载', load, 'button primary')); $('boot').hidden = false; $('app').hidden = true;
+        $('boot').replaceChildren(); $('boot').appendChild(node('strong', '', '配置加载失败')); $('boot').appendChild(node('p', '', error.message || '无法读取配置。')); $('boot').appendChild(button('重新加载', load, 'btn primary')); $('boot').hidden = false; $('app').hidden = true;
       }
     }
     async function start() {
@@ -752,5 +915,31 @@
     }
     start();
   }
-  return { CORE_PLUGIN: CORE_PLUGIN, GROUPS: GROUPS, sectionFields: sectionFields, groupOf: groupOf, fieldTitle: fieldTitle, overviewStatus: overviewStatus, parseList: parseList, referenceMode: referenceMode, referenceValues: referenceValues, toolMode: toolMode, toolValues: toolValues, dirtyKeys: dirtyKeys, buildPatch: buildPatch, mergeSavedState: mergeSavedState, validateValues: validateValues, errorFields: errorFields, matches: matches, mount: mount };
+
+  return {
+    CORE_PLUGIN: CORE_PLUGIN, GROUPS: GROUPS, sectionFields: sectionFields, groupOf: groupOf, fieldTitle: fieldTitle,
+    overviewStatus: overviewStatus, parseList: parseList, referenceMode: referenceMode, referenceValues: referenceValues,
+    toolMode: toolMode, toolValues: toolValues, dirtyKeys: dirtyKeys, buildPatch: buildPatch, mergeSavedState: mergeSavedState,
+    validateValues: validateValues, errorFields: errorFields, matches: matches,
+    exportConfig: exportConfig, importConfig: importConfig, buildDiffList: buildDiffList,
+    mount: mount
+  };
 });
+
+/* 剪贴板工具：优先 Clipboard API，回退 execCommand，返回是否成功。 */
+function copyToClipboard(win, text) {
+  try {
+    if (win.navigator && win.navigator.clipboard && win.navigator.clipboard.writeText) {
+      win.navigator.clipboard.writeText(text).catch(function () {});
+      return true;
+    }
+  } catch (_) {}
+  try {
+    var doc = win.document, ta = doc.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    doc.body.appendChild(ta); ta.select();
+    var ok = doc.execCommand && doc.execCommand('copy');
+    doc.body.removeChild(ta);
+    return !!ok;
+  } catch (_) { return false; }
+}

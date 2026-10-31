@@ -10,29 +10,81 @@
   <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
   <div class="app" id="app" hidden>
     <aside class="sidebar" id="sidebar">
-      <div class="brand"><span class="brand-icon" aria-hidden="true">喵</span><div><strong>糯小喵</strong><small>配置中心</small></div><button id="drawer-close" class="icon-button mobile-only" type="button" aria-label="关闭导航">×</button></div>
+      <div class="brand">
+        <span class="brand-icon" aria-hidden="true">喵</span>
+        <div class="brand-copy"><strong>糯小喵</strong><small>配置中心</small></div>
+        <button id="drawer-close" class="icon-btn mobile-only" type="button" aria-label="关闭导航">×</button>
+      </div>
       <nav id="tabs" aria-label="配置导航"></nav>
       <div class="sidebar-note">各功能独立设置。<br>修改先暂存，点击保存后生效。</div>
     </aside>
     <main class="main">
       <header class="topbar">
-        <button id="drawer-toggle" class="icon-button mobile-only" type="button" aria-label="打开配置导航">☰</button>
-        <div class="search-wrap"><input id="search" type="search" placeholder="搜索功能、配置项或说明" aria-label="搜索配置" autocomplete="off"><button id="search-clear" class="icon-button" type="button" aria-label="清空搜索" hidden>×</button></div>
-        <label class="pending-filter"><input id="pending-only" type="checkbox">仅看待保存</label>
-        <button id="theme-toggle" class="icon-button" type="button" aria-label="切换深浅主题" title="切换深浅主题">◐</button>
+        <button id="drawer-toggle" class="icon-btn mobile-only" type="button" aria-label="打开配置导航">☰</button>
+        <div class="search-wrap">
+          <span class="search-icon" aria-hidden="true">⌕</span>
+          <input id="search" type="search" placeholder="搜索功能、配置项或说明" aria-label="搜索配置" autocomplete="off">
+          <button id="search-clear" class="icon-btn search-clear" type="button" aria-label="清空搜索" hidden>×</button>
+        </div>
+        <label class="pending-filter" title="只显示有未保存修改的配置项">
+          <input id="pending-only" type="checkbox">仅看待保存
+        </label>
+        <button id="theme-toggle" class="icon-btn" type="button" aria-label="切换深浅主题" title="切换深浅主题">◐</button>
       </header>
-      <div class="page-heading"><div><p class="eyebrow">CONFIGURATION</p><h1 id="page-title">总览</h1><p id="page-description"></p></div><span id="timezone" class="timezone"></span></div>
+      <div class="page-heading">
+        <div class="heading-copy">
+          <p class="eyebrow">CONFIGURATION</p>
+          <h1 id="page-title">总览</h1>
+          <p id="page-description"></p>
+        </div>
+        <span id="timezone" class="timezone"></span>
+      </div>
       <div id="banner" class="notice warning" hidden></div>
       <div id="diagnostics" class="diagnostics" aria-live="polite"></div>
       <div id="error-summary" class="notice error" role="alert" hidden></div>
       <div id="pane" class="pane"></div>
       <footer class="savebar">
-        <div class="save-status"><strong id="dirty">没有待保存的修改</strong><small id="save-detail">配置加载后可编辑</small></div>
-        <div class="save-actions"><button id="revert" class="button quiet" type="button" disabled>撤销修改</button><div class="dropdown"><button id="default-menu-btn" class="button quiet" type="button" aria-haspopup="true" aria-expanded="false">默认设置 ▾</button><div id="default-menu" class="dropdown-menu" hidden><button id="save-default" type="button">保存并设为我的默认</button><button id="restore-default" type="button">应用我的默认</button><button id="restore-factory" type="button">应用出厂默认</button><button id="clear-default" type="button">删除我的默认快照</button></div></div><button id="save" class="button primary" type="button" disabled>保存修改</button></div>
+        <div class="save-status">
+          <strong id="dirty">没有待保存的修改</strong>
+          <small id="save-detail">配置加载后可编辑</small>
+        </div>
+        <div class="save-actions">
+          <button id="export-config" class="btn quiet" type="button" title="把当前草稿的完整配置复制为 JSON">导出配置</button>
+          <button id="import-config" class="btn quiet" type="button" title="从 JSON 粘贴覆盖当前草稿">导入配置</button>
+          <button id="revert" class="btn quiet" type="button" disabled>撤销修改</button>
+          <div class="dropdown">
+            <button id="default-menu-btn" class="btn quiet" type="button" aria-haspopup="true" aria-expanded="false">默认设置 ▾</button>
+            <div id="default-menu" class="dropdown-menu" hidden>
+              <button id="save-default" type="button">保存并设为我的默认</button>
+              <button id="restore-default" type="button">应用我的默认</button>
+              <button id="restore-factory" type="button">应用出厂默认</button>
+              <button id="clear-default" type="button">删除我的默认快照</button>
+            </div>
+          </div>
+          <button id="save" class="btn primary" type="button" disabled>保存修改</button>
+        </div>
       </footer>
     </main>
   </div>
-  <div id="boot" class="boot" role="status"><span class="brand-icon" aria-hidden="true">喵</span><p>正在读取配置…</p></div>
+  <div id="boot" class="boot" role="status">
+    <span class="brand-icon" aria-hidden="true">喵</span>
+    <p>正在读取配置…</p>
+  </div>
+  <div id="import-dialog" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="import-title">
+    <div class="modal-panel">
+      <div class="modal-head">
+        <h2 id="import-title">导入配置（JSON）</h2>
+        <button id="import-close" class="icon-btn" type="button" aria-label="关闭">×</button>
+      </div>
+      <p class="field-hint">粘贴一份由「导出配置」生成的 JSON。只接受有效字段，未知键会被忽略；导入内容先进入草稿，点「保存修改」才生效。</p>
+      <textarea id="import-text" class="import-text" rows="10" spellcheck="false" placeholder='{ "debounce_slow_idle_seconds": 1.2, ... }'></textarea>
+      <div id="import-error" class="notice error" role="alert" hidden></div>
+      <div class="modal-actions">
+        <button id="import-cancel" class="btn quiet" type="button">取消</button>
+        <button id="import-apply" class="btn primary" type="button">填入草稿</button>
+      </div>
+    </div>
+  </div>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <script src="./resident.js"></script>
   <script src="./app.js"></script>
