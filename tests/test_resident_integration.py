@@ -35,6 +35,10 @@ except ImportError:
 )
 class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
     def make(self, **config):
+        # 关闭静默时段（start==end）：凌晨跑套件时，触发路径会被静默判断拦下、
+        # 发送走顺延分支，receipts 为空导致 IndexError 假失败。
+        config.setdefault("proactive_quiet_hours_start", "08:00")
+        config.setdefault("proactive_quiet_hours_end", "08:00")
         p = make_plugin(
             context=FakeContext(admins=["10001"]),
             proactive_allow_groups=["20001"],

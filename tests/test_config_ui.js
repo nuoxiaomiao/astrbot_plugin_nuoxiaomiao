@@ -28,7 +28,7 @@ test('deriveGroups covers every schema key exactly once', () => {
     assert.ok(collected.includes(key), 'missing ' + key);
   }
   assert.ok(collected.includes('@reference'));
-  assert.equal(groups.map(g => g.title).join(','), '总览,消息合并,回复节奏,拦截与互动,聊天记录与参考,主动消息,自醒,高级,自主状态,共享记忆与信箱');
+  assert.equal(groups.map(g => g.title).join(','), '总览,消息合并,回复节奏,拦截与互动,聊天记录与参考,主动消息,自醒,QQ 官方,高级,自主状态,共享记忆与信箱');
 });
 
 test('groupOf maps keys to their page', () => {
@@ -38,6 +38,7 @@ test('groupOf maps keys to their page', () => {
   assert.equal(ui.groupOf('activity_prefetch_enabled', groups).id, 'activity');
   assert.equal(ui.groupOf('proactive_silent_wake_enabled', groups).id, 'selfwake');
   assert.equal(ui.groupOf('vision_enabled', groups).id, 'shared_memory');
+  assert.equal(ui.groupOf('qq_official_enabled', groups).id, 'qq_official');
 });
 
 test('reference choices map to exactly one automatic context source', () => {
@@ -221,8 +222,8 @@ test('renders only the active group with Win11 cards', async () => {
   assert.equal(page.get('app').hidden, false);
   assert.equal(page.get('status-root').hidden, true);
   const navLabels = page.get('nav').querySelectorAll('.nav-label').map(el => el.textContent);
-  assert.equal(navLabels.length, 11);
-  assert.equal(navLabels[10], '运行与状态');
+  assert.equal(navLabels.length, 12);
+  assert.equal(navLabels[11], '运行与状态');
   assert.ok(page.get('groups').querySelectorAll('.card').length >= 1);
   assert.ok(page.get('groups').querySelectorAll('.page-title').length === 1);
 });

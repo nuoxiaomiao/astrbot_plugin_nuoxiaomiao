@@ -746,6 +746,58 @@
     "hint": "关闭则只做简短判断。",
     "group": "自醒"
   },
+  "qq_official_enabled": {
+    "description": "【QQ 官方】QQ官方适配",
+    "type": "bool",
+    "default": true,
+    "hint": "识别到 QQ 官方机器人平台时启用下面的适配规则（合成消息投递、纯文本、分条上限等）。",
+    "group": "QQ 官方"
+  },
+  "qq_official_content_mode": {
+    "description": "【QQ 官方】纯文本回复",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭 markdown，统一发普通文本：QQ 官方群多数没有 markdown 权限，开着更容易发送失败或消耗主动消息配额。",
+    "group": "QQ 官方"
+  },
+  "qq_official_max_bubbles": {
+    "description": "【QQ 官方】分条上限",
+    "type": "int",
+    "default": 4,
+    "hint": "拟人回复最多分几条。QQ 官方被动回复复用同一条消息 ID，条数受平台限制，超出部分会合并进最后一条。0=不限。",
+    "group": "QQ 官方",
+    "slider": {
+      "min": 0,
+      "max": 10,
+      "step": 1
+    }
+  },
+  "qq_official_passive_window_seconds": {
+    "description": "【QQ 官方】回复窗口预算(秒)",
+    "type": "int",
+    "default": 240,
+    "hint": "QQ 官方被动回复有效期 5 分钟。打字等待累计超过这个预算后，剩下的内容一次性立即发完，避免超窗失败。",
+    "group": "QQ 官方",
+    "slider": {
+      "min": 30,
+      "max": 300,
+      "step": 10
+    }
+  },
+  "qq_official_group_proactive": {
+    "description": "【QQ 官方】允许群聊主动消息",
+    "type": "bool",
+    "default": false,
+    "hint": "QQ 官方群主动消息需要平台主动消息权限与配额，且进程重启后要等该群先来一条消息才能发。默认关闭，群聊请用 @ 触发回复。",
+    "group": "QQ 官方"
+  },
+  "qq_official_strip_at_markup": {
+    "description": "【QQ 官方】清理@标记",
+    "type": "bool",
+    "default": true,
+    "hint": "把正文里残留的 <qqbot-at-user id=…/> 标记清掉，避免关键词唤醒/速览/模型上下文里出现原始标记。",
+    "group": "QQ 官方"
+  },
   "force_wake_prefix": {
     "description": "【高级】唤醒前缀",
     "type": "string",
