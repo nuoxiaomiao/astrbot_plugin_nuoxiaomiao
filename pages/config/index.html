@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
+  <a class="skip" href="#groups">跳到设置内容</a>
   <svg class="icon-sprite" aria-hidden="true" focusable="false">
     <symbol id="i-overview" viewBox="0 0 20 20"><path d="M3 9.5 10 3l7 6.5V17a1 1 0 0 1-1 1h-4.5v-5h-3v5H4a1 1 0 0 1-1-1z"/></symbol>
     <symbol id="i-debounce" viewBox="0 0 20 20"><path d="M4 4h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H8l-4 3V4z"/><path d="M7 8h6M7 11h4"/></symbol>
@@ -44,7 +45,7 @@
         <div id="banner" class="infobar warning" hidden></div>
         <div id="diagnostics" class="diagnostics" aria-live="polite"></div>
         <div id="error-summary" class="infobar danger" role="alert" hidden></div>
-        <div id="groups"></div>
+        <div id="groups" tabindex="-1"></div>
         <div id="status-root" hidden></div>
       </div>
     </main>
@@ -52,7 +53,7 @@
 
   <footer class="savebar" id="savebar">
     <div class="save-status">
-      <strong id="dirty">没有待保存的修改</strong>
+      <strong id="dirty" aria-live="polite">没有待保存的修改</strong>
       <small id="save-detail">配置加载后可编辑</small>
     </div>
     <div class="save-actions">

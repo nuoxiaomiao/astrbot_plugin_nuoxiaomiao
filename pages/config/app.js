@@ -22,6 +22,8 @@
   var CLUSTER_KEY = 'nxm-cluster-open';
   var LIST_KEY = 'nxm-list-open';
   var REVEAL_KEYS = ['debounce_dynamic_enabled', 'debounce_typing_enabled', 'merge_localize_images', 'proactive_silent_wake_allow_tools'];
+  var LIST_ROWS = 6;
+  var LIST_MAX_HEIGHT = 460;
 
   /* ============================ 分组 ============================ */
   var GROUP_META = [
@@ -158,6 +160,25 @@
     var list = Array.isArray(value) ? value : String(value || '').split(/[\n,，、;；]+/);
     return Array.from(new Set(list.map(function (x) { return String(x).trim(); }).filter(Boolean)));
   }
+  /* 名单文本框的实时统计：条目、重复、空白，用于计数徽标与去重提示。 */
+  function parseListStats(raw) {
+    var parts = Array.isArray(raw) ? raw : String(raw == null ? '' : raw).split(/[\n,，、;；]+/);
+    var seen = Object.create(null), items = [], duplicates = 0, blanks = 0;
+    parts.forEach(function (part) {
+      var text = String(part == null ? '' : part).trim();
+      if (!text) { blanks += 1; return; }
+      if (own(seen, text)) { duplicates += 1; return; }
+      seen[text] = true;
+      items.push(text);
+    });
+    return { items: items, count: items.length, duplicates: duplicates, blanks: blanks };
+  }
+  /* 「名单与范围」标题用：几个名单、共多少条目。 */
+  function listSummary(state, keys) {
+    var items = 0;
+    (keys || []).forEach(function (key) { items += parseList(state && state[key]).length; });
+    return { fields: (keys || []).length, items: items };
+  }
   function valueText(value) {
     return value === '' ? '留空'
       : Array.isArray(value) ? value.length ? value.join('、') : '空名单'
@@ -250,11 +271,12 @@
     var schema = {}, state = {}, baseline = {}, defaults = {}, userDefault = null;
     var groups = [], providers = [], residentTools = [], diagnostics = [], timezone = '';
     var query = '', saving = false, loaded = false;
-    var fieldErrors = {}, toastTimer = null;
+    var fieldErrors = {}, toastTimer = null, searchTimer = null, lastErrorSig = '';
     var clusterOpen = loadMap(CLUSTER_KEY);
     var listOpen = loadMap(LIST_KEY);
     var pageMap = loadMap(PAGE_KEY);
     var activePage = typeof pageMap.page === 'string' ? pageMap.page : 'overview';
+    var lastView = '';
 
     function $(id) { return doc.getElementById(id); }
     function node(tag, cls, text) { var n = doc.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = String(text); return n; }
@@ -265,7 +287,97 @@
       span.textContent = text;
       return span;
     }
-    function showToast(text) { var t = $('toast'); if (!t) return; t.textContent = text; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.hidden = true; }, 5000); }
+    function showToast(text) {
+      var t = $('toast');
+      if (!t) return;
+      t.textContent = text;
+      t.hidden = false;
+      if (t.classList) { t.classList.remove('leave'); t.classList.add('show'); }
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(function () {
+        if (!t.classList) { t.hidden = true; return; }
+        t.classList.remove('show');
+        t.classList.add('leave');
+        toastTimer = setTimeout(function () { t.hidden = true; t.classList.remove('leave'); }, 240);
+      }, 4200);
+    }
+
+    /* ---------- 动效 ---------- */
+    /* 系统要求减少动效，或环境没有 rAF（测试里的迷你 DOM）时，全部退化为瞬时切换。 */
+    function prefersReducedMotion() {
+      try { return !!(win.matchMedia && win.matchMedia('(prefers-reduced-motion: reduce)').matches); }
+      catch (error) { return false; }
+    }
+    function canAnimate() {
+      return typeof win.requestAnimationFrame === 'function' && !prefersReducedMotion();
+    }
+    function pop(el) {
+      if (!el || !el.classList) return;
+      el.classList.remove('pop');
+      if (typeof el.offsetWidth === 'number') void el.offsetWidth;
+      el.classList.add('pop');
+      clearTimeout(el.__nxmPopTimer);
+      el.__nxmPopTimer = setTimeout(function () { el.classList.remove('pop'); }, 320);
+    }
+    /* 折叠动画：hidden 仍是唯一真值；有动画能力时用 max-height 过渡，结束后再落 hidden。 */
+    function setBodyOpen(el, open) {
+      if (!el) return;
+      if (el.__nxmOpen === open) return;
+      el.__nxmOpen = open;
+      if (el.__nxmTimer) { clearTimeout(el.__nxmTimer); el.__nxmTimer = null; }
+      var style = el.style || {};
+      if (!canAnimate() || typeof el.scrollHeight !== 'number') {
+        el.hidden = !open;
+        if (el.classList) el.classList.remove('is-animating');
+        if (style.maxHeight !== undefined) { style.maxHeight = ''; style.opacity = ''; }
+        return;
+      }
+      if (el.classList) el.classList.add('is-animating');
+      if (open) {
+        el.hidden = false;
+        style.maxHeight = '0px';
+        style.opacity = '0';
+        void el.offsetHeight;
+        style.maxHeight = el.scrollHeight + 'px';
+        style.opacity = '1';
+        el.__nxmTimer = setTimeout(function () {
+          el.__nxmTimer = null;
+          style.maxHeight = '';
+          style.opacity = '';
+          if (el.classList) el.classList.remove('is-animating');
+        }, 280);
+      } else {
+        style.maxHeight = el.scrollHeight + 'px';
+        style.opacity = '1';
+        void el.offsetHeight;
+        style.maxHeight = '0px';
+        style.opacity = '0';
+        el.__nxmTimer = setTimeout(function () {
+          el.__nxmTimer = null;
+          el.hidden = true;
+          style.maxHeight = '';
+          style.opacity = '';
+          if (el.classList) el.classList.remove('is-animating');
+        }, 240);
+      }
+    }
+    /* 页面切换入场：重放 CSS 动画。 */
+    function playPageIn() {
+      var box = groupsEl();
+      if (!box || !box.classList) return;
+      box.classList.remove('page-enter');
+      if (typeof box.offsetWidth === 'number') void box.offsetWidth;
+      box.classList.add('page-enter');
+    }
+    function stagger(card, index) {
+      if (card && card.style && typeof card.style.setProperty === 'function') card.style.setProperty('--i', String(index));
+      return card;
+    }
+    function flashRow(el) {
+      if (!el || !el.classList) return;
+      el.classList.add('flash');
+      setTimeout(function () { el.classList.remove('flash'); }, 1300);
+    }
     function defaultOf(key) { return userDefault && own(userDefault, key) ? userDefault[key] : defaults[key]; }
     function loadMap(storageKey) {
       try {
@@ -350,6 +462,100 @@
       input.addEventListener('change', function () { onChange(key, input.value); var warning = holder.querySelector('.provider-warning'); if (warning) warning.remove(); });
       holder.prepend(input); return holder;
     }
+    /* ---------- 名单编辑器 ---------- */
+    function fitListInput(el) {
+      if (!el || !el.style) return;
+      if (typeof el.scrollHeight !== 'number' || !el.scrollHeight) return;
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, LIST_MAX_HEIGHT) + 'px';
+    }
+    function listControl(key) {
+      var spec = schema[key] || {};
+      var title = fieldTitle(spec, key);
+      var raw = Array.isArray(state[key]) ? state[key].join('\n') : state[key];
+      var wrap = node('div', 'list-editor');
+      wrap.id = 'list-editor-' + key;
+
+      var top = node('div', 'list-editor-top');
+      top.appendChild(node('span', 'list-editor-tip', '每行一项'));
+      var count = node('span', 'list-count');
+      count.id = 'list-count-' + key;
+      count.setAttribute('aria-live', 'polite');
+      top.appendChild(count);
+      wrap.appendChild(top);
+
+      var input = labelInput(node('textarea', 'list-input'), key);
+      input.rows = LIST_ROWS;
+      input.spellcheck = false;
+      var rawStats = parseListStats(raw);
+      input.value = rawStats.items.join('\n');
+      input.placeholder = '还没有添加任何一项\n每行一项，也可粘贴逗号、顿号分隔的内容';
+      wrap.appendChild(input);
+
+      var foot = node('div', 'list-editor-foot');
+      var meta = node('span', 'list-meta');
+      meta.id = 'list-meta-' + key;
+      foot.appendChild(meta);
+      var actions = node('div', 'list-actions');
+      actions.appendChild(button('整理', tidy, 'link-btn list-action'));
+      var clearBtn = button('清空', clear, 'link-btn list-action danger');
+      actions.appendChild(clearBtn);
+      foot.appendChild(actions);
+      var armed = false, armTimer = null;
+      function disarm() {
+        armed = false;
+        clearTimeout(armTimer);
+        clearBtn.textContent = '清空';
+        if (clearBtn.classList) clearBtn.classList.remove('armed');
+      }
+      wrap.appendChild(foot);
+
+      function sync(animateCount) {
+        var stats = parseListStats(input.value);
+        count.textContent = '共 ' + stats.count + ' 项';
+        meta.textContent = stats.duplicates
+          ? '已合并 ' + stats.duplicates + ' 项重复'
+          : stats.count ? '重复项会自动合并' : '留空表示不限';
+        if (wrap.classList) wrap.classList.toggle('is-empty', stats.count === 0);
+        if (animateCount) pop(count);
+        fitListInput(input);
+        return stats;
+      }
+      function tidy() {
+        var stats = parseListStats(input.value);
+        input.value = stats.items.join('\n');
+        sync(true);
+        onChange(key, stats.items);
+        showToast(stats.duplicates ? '已整理：合并了 ' + stats.duplicates + ' 项重复内容。' : '名单已经是整理好的状态。');
+      }
+      function clear() {
+        /* 两段式确认：第一次点击只是「上膛」，3.2 秒内再点一次才真正清空，避免误触清掉整份名单。 */
+        if (!armed) {
+          armed = true;
+          clearBtn.textContent = '确认清空？';
+          if (clearBtn.classList) clearBtn.classList.add('armed');
+          showToast('再点一次「确认清空？」即可清空这个名单。');
+          clearTimeout(armTimer);
+          armTimer = setTimeout(disarm, 3200);
+          return;
+        }
+        disarm();
+        input.value = '';
+        sync(true);
+        onChange(key, []);
+        showToast('已清空「' + title + '」，保存后生效。');
+      }
+
+      input.addEventListener('input', function () {
+        if (armed) disarm();
+        onChange(key, sync(true).items);
+      });
+      sync(false);
+      /* 存储值里本来就有重复：明确告诉用户显示值已经去过重，而不是笼统一句提示。 */
+      if (rawStats.duplicates) meta.textContent = '已合并 ' + rawStats.duplicates + ' 项重复';
+      if (typeof win.requestAnimationFrame === 'function') win.requestAnimationFrame(function () { fitListInput(input); });
+      return wrap;
+    }
     function buildControl(key, spec) {
       var value = state[key], input;
       if (key === 'resident_extra_tools') return residentToolsControl(key);
@@ -361,7 +567,7 @@
         var custom = node('textarea'); custom.rows = 2; custom.value = value || ''; custom.setAttribute('aria-label', '自定义合并分隔符'); custom.hidden = input.value !== '@custom';
         input.addEventListener('change', function () { custom.hidden = input.value !== '@custom'; onChange(key, custom.hidden ? input.value : custom.value); });
         custom.addEventListener('input', function () { onChange(key, custom.value); });
-        var holder = node('div'); holder.appendChild(input); holder.appendChild(custom); return holder;
+        var holder = node('div', 'stack-control'); holder.appendChild(input); holder.appendChild(custom); return holder;
       }
       if (spec.type === 'bool') {
         var label = node('label', 'switch'); input = labelInput(node('input'), key); input.type = 'checkbox'; input.checked = !!value;
@@ -369,15 +575,7 @@
         input.addEventListener('change', function () { text.textContent = input.checked ? '开' : '关'; onChange(key, input.checked); });
         label.appendChild(input); label.appendChild(text); return label;
       }
-      if (spec.type === 'list') {
-        var listHolder = node('div'); input = labelInput(node('textarea'), key); input.rows = 3; input.value = parseList(value).join('\n');
-        input.placeholder = '每行一项，或逗号分隔';
-        input.title = '每行一项，也可粘贴逗号分隔内容';
-        var foot = node('div', 'list-footer'), count = node('span', 'list-count', '共 ' + parseList(value).length + ' 项');
-        input.addEventListener('input', function () { var list = parseList(input.value); count.textContent = '共 ' + list.length + ' 项'; onChange(key, list); });
-        foot.appendChild(count); foot.appendChild(button('清空名单', function () { input.value = ''; count.textContent = '共 0 项'; onChange(key, []); }, 'link-btn'));
-        listHolder.appendChild(input); listHolder.appendChild(foot); return listHolder;
-      }
+      if (spec.type === 'list') return listControl(key);
       if (spec.type === 'text') { input = labelInput(node('textarea', 'prompt'), key); input.rows = 5; }
       else { input = labelInput(node('input'), key); input.type = TIME_KEYS.indexOf(key) >= 0 ? 'time' : spec.type === 'int' || spec.type === 'float' ? 'number' : 'text'; }
       input.value = value === null || value === undefined ? '' : value;
@@ -408,11 +606,24 @@
       var el = node('div', 'row' + (isBlock ? ' block' : ''));
       el.id = 'field-' + key; el.dataset.key = key;
       var copy = node('div', 'row-copy');
-      var label = node('label', 'row-label'); label.htmlFor = 'input-' + key; fillText(label, fieldTitle(spec, key)); copy.appendChild(label);
+      var label = node('label', 'row-label'); label.id = 'label-' + key; fillText(label, fieldTitle(spec, key)); copy.appendChild(label);
       var desc = node('p', 'row-desc'); desc.id = 'hint-' + key; fillText(desc, spec.hint || ''); desc.hidden = !spec.hint; copy.appendChild(desc);
       var err = node('p', 'row-error'); err.id = 'error-' + key; err.hidden = true; copy.appendChild(err);
       el.appendChild(copy);
       var control = node('div', 'row-control'); control.appendChild(buildControl(key, spec)); el.appendChild(control);
+      /* 标签与控件关联：有 id 的单个控件用 for；成组控件（工具多选等）用 aria-labelledby。 */
+      var target = control.querySelector('#input-' + key);
+      if (target) {
+        label.htmlFor = 'input-' + key;
+        target.setAttribute('aria-describedby', 'hint-' + key + ' error-' + key);
+      } else {
+        if (typeof label.removeAttribute === 'function') label.removeAttribute('for');
+        var group = control.firstChild;
+        if (group && typeof group.setAttribute === 'function') {
+          group.setAttribute('role', 'group');
+          group.setAttribute('aria-labelledby', 'label-' + key);
+        }
+      }
       return el;
     }
 
@@ -424,7 +635,10 @@
     }
     function listShouldOpen(cluster) {
       if (query) return true;
-      return !!listOpen[cluster.id];
+      if (own(listOpen, cluster.id)) return !!listOpen[cluster.id];
+      /* 没记忆过时：功能已开启且名单里有内容，默认展开，省掉一次点击。 */
+      if (!clusterGateOn(cluster, state)) return false;
+      return cluster.lists.some(function (key) { return parseList(state[key]).length > 0; });
     }
     function toggleCluster(cluster) {
       clusterOpen[cluster.id] = !clusterShouldOpen(cluster);
@@ -439,13 +653,16 @@
     function applyClusterOpen(cluster) {
       var body = $('cluster-body-' + cluster.id), toggle = $('cluster-toggle-' + cluster.id);
       var open = clusterShouldOpen(cluster);
-      if (body) body.hidden = !open;
-      if (toggle) toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      setBodyOpen(body, open);
+      if (toggle) {
+        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        toggle.title = open ? '收起' : '展开';
+      }
     }
     function applyListOpen(cluster) {
       var body = $('list-body-' + cluster.id), bar = $('list-bar-' + cluster.id);
       var open = listShouldOpen(cluster);
-      if (body) body.hidden = !open;
+      setBodyOpen(body, open);
       if (bar) bar.setAttribute('aria-expanded', open ? 'true' : 'false');
     }
     function fieldVisibleInCluster(key, cluster, group) {
@@ -508,13 +725,17 @@
       var head = button('', function () { toggleList(cluster); }, 'subblock-head');
       head.id = 'list-bar-' + cluster.id;
       head.setAttribute('aria-expanded', open ? 'true' : 'false');
+      head.setAttribute('aria-controls', 'list-body-' + cluster.id);
       head.appendChild(node('span', 'subblock-title', '名单与范围'));
-      head.appendChild(node('span', 'subblock-count', '共 ' + keys.length + ' 项'));
+      var summary = listSummary(state, cluster.lists);
+      var summaryEl = node('span', 'subblock-count', summary.fields + ' 个名单 · 共 ' + summary.items + ' 项');
+      summaryEl.id = 'list-summary-' + cluster.id;
+      head.appendChild(summaryEl);
       var pending = node('span', 'nav-badge'); pending.id = 'list-pending-' + cluster.id; pending.hidden = true;
       head.appendChild(pending);
       head.appendChild(chevronIcon());
       wrap.appendChild(head);
-      var body = node('div', 'subblock-body'); body.id = 'list-body-' + cluster.id; body.hidden = !open;
+      var body = node('div', 'subblock-body'); body.id = 'list-body-' + cluster.id; body.hidden = !open; body.__nxmOpen = open;
       keys.forEach(function (key) { var r = row(key); if (r) body.appendChild(r); });
       wrap.appendChild(body);
       return wrap;
@@ -544,11 +765,13 @@
       toggle.id = 'cluster-toggle-' + cluster.id;
       toggle.title = open ? '收起' : '展开';
       toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      toggle.setAttribute('aria-controls', 'cluster-body-' + cluster.id);
+      toggle.setAttribute('aria-label', cluster.title + (open ? '：收起' : '：展开'));
       toggle.appendChild(chevronIcon());
       actions.appendChild(toggle);
       head.appendChild(actions);
       card.appendChild(head);
-      var body = node('div', 'card-body'); body.id = 'cluster-body-' + cluster.id; body.hidden = !open;
+      var body = node('div', 'card-body'); body.id = 'cluster-body-' + cluster.id; body.hidden = !open; body.__nxmOpen = open;
       if (cluster.gates.length > 1) cluster.gates.forEach(function (key) { if (schema[key]) body.appendChild(row(key)); });
       cluster.children.forEach(function (key) {
         if (!fieldVisibleInCluster(key, cluster, group)) return;
@@ -605,7 +828,7 @@
       groupsEl().appendChild(pageHead(group.title, group.note, true));
       var cards = buildGroupCards(group);
       if (!cards.length) groupsEl().appendChild(node('p', 'empty', '这个分组没有可显示的设置。'));
-      cards.forEach(function (card) { groupsEl().appendChild(card); });
+      cards.forEach(function (card, index) { groupsEl().appendChild(stagger(card, index)); });
     }
     function renderSearch() {
       var sections = [], total = 0;
@@ -631,7 +854,7 @@
       groupsEl().replaceChildren();
       groupsEl().appendChild(pageHead('搜索结果', total ? '共 ' + total + ' 项匹配：' + query : '没有匹配「' + query + '」的设置', false));
       if (!sections.length) groupsEl().appendChild(node('p', 'empty', '没有找到匹配项。可以搜索“私聊”“名单”“自醒”等词。'));
-      sections.forEach(function (section) { groupsEl().appendChild(section); });
+      sections.forEach(function (section, index) { groupsEl().appendChild(stagger(section, index)); });
     }
     function renderStatusPage() {
       var root = $('status-root'); if (!root) return;
@@ -652,16 +875,36 @@
     }
     function renderPage() {
       if (!loaded) return;
+      var active = doc.activeElement;
+      var keepId = active && active.id ? active.id : '';
+      var keepY = typeof win.scrollY === 'number' ? win.scrollY : 0;
       updateNavActive();
       var statusMode = !query && activePage === 'status';
+      var viewKey = statusMode ? 'status' : query ? 'search' : 'page:' + activePage;
       var groupsBox = groupsEl(), statusBox = $('status-root');
       if (groupsBox) groupsBox.hidden = statusMode;
       if (statusBox) statusBox.hidden = !statusMode;
       if (statusMode) renderStatusPage();
       else if (query) renderSearch();
       else renderConfigPage(groupById(activePage) || groups[0]);
+      /* 只在真正切换视图时播放入场动画并回到顶部：搜索逐键重渲染不会闪、不会跳。 */
+      if (viewKey !== lastView) {
+        lastView = viewKey;
+        playPageIn();
+        if (typeof win.scrollTo === 'function') win.scrollTo(0, 0);
+      } else if (keepId) {
+        /* 同一视图内的重渲染（开关展开字段、保存返回、恢复默认）：把焦点和滚动位置还回去。 */
+        var again = $(keepId);
+        if (again && typeof again.focus === 'function') {
+          try { again.focus({ preventScroll: true }); } catch (error) { again.focus(); }
+          if (typeof win.scrollTo === 'function') win.scrollTo(0, keepY);
+        }
+      }
       var savebar = $('savebar');
-      if (savebar) savebar.hidden = statusMode;
+      if (savebar) {
+        /* 「运行与状态」页也保留保存条：有待保存修改时不隐藏，避免误以为已经保存。 */
+        savebar.hidden = statusMode && !dirtyKeys(state, baseline, schema).length;
+      }
     }
 
     /* ---------- 导航 ---------- */
@@ -694,6 +937,10 @@
         item.classList.toggle('active', on);
         if (on) item.setAttribute('aria-current', 'page');
         else if (typeof item.removeAttribute === 'function') item.removeAttribute('aria-current');
+        /* 窄屏是横向导航条：把当前页滚进可视区，否则它会被裁在屏幕外。 */
+        if (on && typeof win.innerWidth === 'number' && win.innerWidth <= 900 && typeof item.scrollIntoView === 'function') {
+          try { item.scrollIntoView({ block: 'nearest', inline: 'center' }); } catch (error) { /* 老浏览器忽略 */ }
+        }
       }
     }
     function selectPage(id) {
@@ -713,6 +960,11 @@
       var on = clusterGateOn(cluster, state);
       var pill = $('cluster-state-' + cluster.id);
       if (pill) { pill.textContent = on ? '' : '已关闭'; pill.classList.toggle('off', !on); }
+      var summaryEl = $('list-summary-' + cluster.id);
+      if (summaryEl) {
+        var summary = listSummary(state, cluster.lists);
+        summaryEl.textContent = summary.fields + ' 个名单 · 共 ' + summary.items + ' 项';
+      }
       applyClusterOpen(cluster);
       applyListOpen(cluster);
     }
@@ -726,6 +978,8 @@
       if (revertBtn) revertBtn.disabled = !loaded || saving || !keys.length;
       if (factoryBtn) factoryBtn.disabled = !loaded || saving;
       var clear = $('search-clear'); if (clear) clear.hidden = !query;
+      var savebar = $('savebar');
+      if (savebar && savebar.classList) savebar.classList.toggle('is-dirty', !!loaded && keys.length > 0);
       groups.forEach(function (group) {
         var count = pendingCount(group, keys);
         var badge = $('nav-pending-' + group.id);
@@ -768,6 +1022,10 @@
     function renderErrors() {
       var box = $('error-summary'); if (!box) return;
       var keys = Object.keys(fieldErrors);
+      /* 同一组错误不重复重建，避免 aria-live 逐键反复播报。 */
+      var sig = keys.join('|');
+      if (sig === lastErrorSig) return;
+      lastErrorSig = sig;
       box.replaceChildren(); box.hidden = !keys.length;
       if (!keys.length) return;
       box.appendChild(node('strong', '', '有 ' + keys.length + ' 项需要修正，尚未保存。'));
@@ -786,12 +1044,19 @@
       renderPage(); refresh();
       var el = $('field-' + target); if (!el) return;
       if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      flashRow(el);
       var input = el.querySelector('input,textarea,select'); if (input) input.focus({ preventScroll: true });
+    }
+    function focusControl(key) {
+      var el = $('input-' + key);
+      if (!el || typeof el.focus !== 'function') return;
+      try { el.focus({ preventScroll: true }); } catch (error) { el.focus(); }
     }
     function onChange(key, value) {
       state[key] = value; delete fieldErrors[key];
       if (WAKE_KEYS.indexOf(key) >= 0) WAKE_KEYS.forEach(function (k) { delete fieldErrors[k]; });
-      if (REVEAL_KEYS.indexOf(key) >= 0) renderPage();
+      /* 会引发整页重渲染的开关：重建后把焦点还给同一个控件，键盘操作不中断。 */
+      if (REVEAL_KEYS.indexOf(key) >= 0) { renderPage(); focusControl(key); }
       refresh();
     }
 
@@ -848,9 +1113,18 @@
       wire('save', 'click', save);
       wire('revert', 'click', revert);
       wire('restore-factory', 'click', restoreFactory);
-      wire('search', 'input', function () { query = $('search').value.trim().toLowerCase(); renderPage(); refresh(); });
+      wire('search', 'input', function () {
+        var next = $('search').value.trim().toLowerCase();
+        /* 真实浏览器里 120ms 防抖，避免逐键全量重渲染；无 rAF 的测试环境保持同步。 */
+        if (typeof win.requestAnimationFrame !== 'function') { query = next; renderPage(); refresh(); return; }
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(function () { query = next; renderPage(); refresh(); }, 120);
+      });
       wire('search-clear', 'click', function () { $('search').value = ''; query = ''; renderPage(); refresh(); });
-      doc.addEventListener('keydown', function (event) { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); save(); } });
+      doc.addEventListener('keydown', function (event) {
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); save(); return; }
+        if (event.key === 'Escape' && query && doc.activeElement === $('search')) { event.preventDefault(); $('search').value = ''; query = ''; renderPage(); refresh(); }
+      });
       win.addEventListener('beforeunload', function (event) { if (!dirtyKeys(state, baseline, schema).length) return; event.preventDefault(); event.returnValue = ''; });
     }
     async function load() {
@@ -914,7 +1188,8 @@
   return {
     CORE_PLUGIN: CORE_PLUGIN, GROUP_META: GROUP_META, CLUSTERS: CLUSTERS, VISIBLE_WHEN: VISIBLE_WHEN,
     deriveGroups: deriveGroups, groupOf: groupOf, fieldTitle: fieldTitle, clusterFieldCount: clusterFieldCount,
-    parseList: parseList, valueText: valueText, referenceMode: referenceMode, referenceValues: referenceValues,
+    parseList: parseList, parseListStats: parseListStats, listSummary: listSummary,
+    valueText: valueText, referenceMode: referenceMode, referenceValues: referenceValues,
     dirtyKeys: dirtyKeys, buildPatch: buildPatch, mergeSavedState: mergeSavedState,
     validateValues: validateValues, errorFields: errorFields, matches: matches,
     highlightParts: highlightParts, pendingCount: pendingCount,

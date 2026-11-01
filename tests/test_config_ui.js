@@ -115,6 +115,18 @@ test('every cluster key exists in the schema and appears once', () => {
   }
 });
 
+test('list stats separate duplicates and blanks from items', () => {
+  assert.deepEqual(ui.parseListStats('10001，10002\n10001;10003'), { items: ['10001', '10002', '10003'], count: 3, duplicates: 1, blanks: 0 });
+  assert.deepEqual(ui.parseListStats(''), { items: [], count: 0, duplicates: 0, blanks: 1 });
+  assert.deepEqual(ui.parseListStats(['a', 'a', 'b']), { items: ['a', 'b'], count: 2, duplicates: 1, blanks: 0 });
+  assert.deepEqual(ui.parseListStats('  a  、b\n\n'), { items: ['a', 'b'], count: 2, duplicates: 0, blanks: 1 });
+});
+
+test('list summary reports field count and total items', () => {
+  assert.deepEqual(ui.listSummary({ a: ['1', '2'], b: [], c: ['3'] }, ['a', 'b', 'c']), { fields: 3, items: 3 });
+  assert.deepEqual(ui.listSummary({}, ['a']), { fields: 1, items: 0 });
+});
+
 /* ============================ 迷你 DOM ============================ */
 
 class Element {
@@ -276,6 +288,54 @@ test('feature card folds its settings and lists under the toggle', async () => {
   assert.equal(page.get('reason-debounce_slow_idle_seconds'), null);
 });
 
+test('list editor renders as a full-width block with a live count', async () => {
+  const page = fixture({ user_blacklist: ['10001', '10002', '10003'] }); await settled();
+  navItem(page, 'interaction').dispatch('click');
+  const editor = page.get('list-editor-user_blacklist');
+  assert.ok(editor, 'list editor should exist');
+  assert.ok(editor.classList.contains('list-editor'));
+  assert.ok(page.get('field-user_blacklist').classList.contains('block'));
+  assert.equal(page.get('input-user_blacklist').value, '10001\n10002\n10003');
+  assert.equal(page.get('list-count-user_blacklist').textContent, '共 3 项');
+  assert.equal(page.get('list-meta-user_blacklist').textContent, '重复项会自动合并');
+});
+
+test('typing in a list updates count, dedupe hint and dirty state', async () => {
+  const page = fixture(); await settled();
+  navItem(page, 'interaction').dispatch('click');
+  const input = page.get('input-user_blacklist');
+  input.value = '10001\n10002\n10001\n\n10003';
+  input.dispatch('input');
+  assert.equal(page.get('list-count-user_blacklist').textContent, '共 3 项');
+  assert.equal(page.get('list-meta-user_blacklist').textContent, '已合并 1 项重复');
+  assert.equal(page.get('dirty').textContent, '待保存 1 项');
+});
+
+test('tidy normalises the list and clear empties it', async () => {
+  const page = fixture(); await settled();
+  navItem(page, 'interaction').dispatch('click');
+  const editor = page.get('list-editor-user_blacklist');
+  const input = page.get('input-user_blacklist');
+  input.value = ' 10001 ，10002\n10001 ';
+  input.dispatch('input');
+  findButton(editor, '整理').dispatch('click');
+  assert.equal(input.value, '10001\n10002');
+  assert.equal(page.get('list-count-user_blacklist').textContent, '共 2 项');
+  findButton(editor, '清空').dispatch('click');
+  assert.equal(input.value, '10001\n10002', '第一次点击只是上膛，不应清空');
+  findButton(editor, '确认清空？').dispatch('click');
+  assert.equal(input.value, '');
+  assert.equal(page.get('list-count-user_blacklist').textContent, '共 0 项');
+  assert.ok(editor.classList.contains('is-empty'));
+});
+
+test('list block opens by default when it already holds entries', async () => {
+  const page = fixture({ debounce_user_whitelist: ['1234567890'] }); await settled();
+  navItem(page, 'debounce').dispatch('click');
+  assert.equal(page.get('list-body-debounce').hidden, false);
+  assert.equal(page.get('list-summary-debounce').textContent, '3 个名单 · 共 1 项');
+});
+
 test('conditional fields swap with their switch', async () => {
   const page = fixture(); await settled();
   navItem(page, 'debounce').dispatch('click');
@@ -283,6 +343,8 @@ test('conditional fields swap with their switch', async () => {
   check(page, 'debounce_dynamic_enabled', false);
   assert.ok(page.get('field-merge_idle_seconds'));
   assert.equal(page.get('field-debounce_slow_idle_seconds'), null);
+  /* 整页重渲染后焦点要回到同一个开关，键盘操作不中断 */
+  assert.equal(page.document.activeElement && page.document.activeElement.id, 'input-debounce_dynamic_enabled');
 });
 
 test('group reset restores only that group', async () => {
