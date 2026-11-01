@@ -201,7 +201,7 @@ class ConfigApiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(data["status"], "ok")
             self.assertTrue(data["data"]["validation_error"])
             self.assertIn("trigger_rounds", data["data"]["field_errors"])
-            self.assertIn("连刷触发轮数", data["data"]["message"])
+            self.assertIn("连刷轮数", data["data"]["message"])
             self.assertEqual(dict(plugin.config), before)
             self.assertEqual(plugin.config.saves, 0)
             self.assertEqual(plugin.applies, 0)

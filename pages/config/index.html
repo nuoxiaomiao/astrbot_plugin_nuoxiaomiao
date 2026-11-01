@@ -3,31 +3,53 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>糯小喵 · 配置</title>
+  <title>糯小喵 · 设置</title>
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
-  <header class="topbar" id="topbar">
-    <div class="brand"><strong>糯小喵</strong><span class="brand-sub">配置</span></div>
-    <div class="search-wrap">
-      <input id="search" type="search" placeholder="搜索配置项" aria-label="搜索配置" autocomplete="off">
-      <button id="search-clear" class="search-clear" type="button" aria-label="清空搜索" hidden>×</button>
-    </div>
-    <span id="timezone" class="timezone"></span>
-  </header>
+  <svg class="icon-sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-overview" viewBox="0 0 20 20"><path d="M3 9.5 10 3l7 6.5V17a1 1 0 0 1-1 1h-4.5v-5h-3v5H4a1 1 0 0 1-1-1z"/></symbol>
+    <symbol id="i-debounce" viewBox="0 0 20 20"><path d="M4 4h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H8l-4 3V4z"/><path d="M7 8h6M7 11h4"/></symbol>
+    <symbol id="i-human_reply" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"/><path d="M10 6v4l3 2"/></symbol>
+    <symbol id="i-interaction" viewBox="0 0 20 20"><path d="M10 2.5 16.5 5v4.8c0 3.8-2.7 6.2-6.5 7.7-3.8-1.5-6.5-3.9-6.5-7.7V5z"/><path d="M7.5 10l1.8 1.8 3.2-3.6"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 20 20"><ellipse cx="10" cy="5.5" rx="6.5" ry="2.5"/><path d="M3.5 5.5v9c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5v-9"/><path d="M3.5 10c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5"/></symbol>
+    <symbol id="i-proactive" viewBox="0 0 20 20"><path d="M2.5 10 17.5 3l-3.2 7 3.2 7z"/><path d="M14.3 10H7"/></symbol>
+    <symbol id="i-selfwake" viewBox="0 0 20 20"><path d="M12.8 3.2A7 7 0 1 0 16.8 12a5.5 5.5 0 0 1-4-8.8z"/></symbol>
+    <symbol id="i-advanced" viewBox="0 0 20 20"><path d="M3 6h6M13 6h4M3 14h4M11 14h6"/><circle cx="11" cy="6" r="2"/><circle cx="9" cy="14" r="2"/></symbol>
+    <symbol id="i-resident_state" viewBox="0 0 20 20"><circle cx="10" cy="6.5" r="3"/><path d="M3.5 17c.8-3.2 3.3-5 6.5-5s5.7 1.8 6.5 5"/></symbol>
+    <symbol id="i-shared_memory" viewBox="0 0 20 20"><path d="M3 7h5l1.5 2H17v8H3z"/><path d="M3 7V5h5l1.5 2"/></symbol>
+    <symbol id="i-status" viewBox="0 0 20 20"><path d="M2.5 10h3.5l2-5 3 10 2-5h4.5"/></symbol>
+    <symbol id="i-search" viewBox="0 0 20 20"><circle cx="9" cy="9" r="5.5"/><path d="M13 13l4 4"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 20 20"><path d="M6 8l4 4 4-4"/></symbol>
+  </svg>
 
-  <main class="main" id="app" hidden>
-    <div id="banner" class="banner" hidden></div>
-    <div id="diagnostics" class="diagnostics" aria-live="polite"></div>
-    <div id="error-summary" class="error-summary" role="alert" hidden></div>
-    <div id="groups" class="groups"></div>
-    <details id="resident" class="resident">
-      <summary>自主运行与状态</summary>
-      <div id="resident-root"></div>
-    </details>
-  </main>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">喵</span>
+        <span class="brand-text"><strong>糯小喵</strong><small>设置</small></span>
+      </div>
+      <div class="search-wrap">
+        <svg class="search-icon" aria-hidden="true"><use href="#i-search"></use></svg>
+        <input id="search" type="search" placeholder="搜索设置" aria-label="搜索设置" autocomplete="off">
+        <button id="search-clear" class="search-clear" type="button" aria-label="清空搜索" hidden>×</button>
+      </div>
+      <nav id="nav" class="nav" aria-label="设置导航"></nav>
+      <div class="sidebar-foot"><span id="timezone"></span></div>
+    </aside>
 
-  <footer class="savebar">
+    <main class="content">
+      <div class="content-inner" id="app" hidden>
+        <div id="banner" class="infobar warning" hidden></div>
+        <div id="diagnostics" class="diagnostics" aria-live="polite"></div>
+        <div id="error-summary" class="infobar danger" role="alert" hidden></div>
+        <div id="groups"></div>
+        <div id="status-root" hidden></div>
+      </div>
+    </main>
+  </div>
+
+  <footer class="savebar" id="savebar">
     <div class="save-status">
       <strong id="dirty">没有待保存的修改</strong>
       <small id="save-detail">配置加载后可编辑</small>
