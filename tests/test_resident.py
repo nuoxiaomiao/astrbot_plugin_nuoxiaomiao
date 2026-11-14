@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 from astrbot.core.agent.tool import ToolSet
 from astrbot.core.provider.entities import LLMResponse, ProviderRequest, TokenUsage
 
-from main import ActivityEntry, SELF_WAKE_EVENT_EXTRA
+from infra.constants import ActivityEntry, SELF_WAKE_EVENT_EXTRA
 from resident.autonomy import (
     Run,
     ScopedExecutor,
@@ -19,8 +19,8 @@ from resident.autonomy import (
     BudgetExceeded,
 )
 from resident.store import Conflict, migrate
-from test_plugin_logic import make_plugin, FakeContext, FakeEvent
-from resident_fixtures import (
+from tests.fakes import FakeContext, FakeEvent, make_plugin
+from tests.resident_fixtures import (
     ScriptedProvider,
     build_runner,
     conversation,
@@ -46,7 +46,7 @@ class ResidentTest(unittest.IsolatedAsyncioTestCase):
         mid="",
         sender="9",
     ):
-        return p._record_activity(
+        return p.activity.record_activity(
             ActivityEntry(
                 ts=time.time(),
                 sender_id=sender,
@@ -268,7 +268,7 @@ class ResidentTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(p.resident_extra_tools, {"edit"})
         self.assertTrue(
             (
-                Path(p._activity_db_file()).parent / "config.before-resident-v1.json"
+                Path(p.activity_db_file()).parent / "config.before-resident-v1.json"
             ).exists()
         )
 
@@ -283,8 +283,8 @@ class ResidentTest(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(RuntimeError):
             await provider.text_chat()
-        p._close_activity_db()
-        self.assertFalse(p._silent_wake_budget_left())
+        p.db.close()
+        self.assertFalse(p.self_wake.budget_left())
         p.resident.store.recover()
         row = p.resident.store.rows("SELECT * FROM resident_runs WHERE id=?", (rid,))[0]
         self.assertEqual(row["status"], "unknown")
@@ -369,7 +369,7 @@ class ResidentTest(unittest.IsolatedAsyncioTestCase):
                 ),
             ]
         )
-        p._select_self_wake_provider = AsyncMock(return_value=provider)
+        p.self_wake.select_provider = AsyncMock(return_value=provider)
 
         async def failed(event, intent):
             return json.dumps({"error": "目标不允许"})
@@ -388,10 +388,10 @@ class ResidentTest(unittest.IsolatedAsyncioTestCase):
             return await build_runner(**kwargs, tools=tools, hooks=p.on_llm_request)
 
         with (
-            patch("main._get_session_conv", AsyncMock(return_value=conversation())),
-            patch("main._build_main_agent", build),
+            patch("resident.ports._get_session_conv", AsyncMock(return_value=conversation())),
+            patch("resident.ports.build_main_agent", build),
         ):
-            ok, outcome = await p._run_self_wake_turn(30, 0.5, 0.1)
+            ok, outcome = await p.self_wake.run_turn(30, 0.5, 0.1)
         self.assertTrue(ok)
         self.assertEqual(outcome, "quiet")
         rows = p.resident.store.rows("SELECT * FROM resident_actions")

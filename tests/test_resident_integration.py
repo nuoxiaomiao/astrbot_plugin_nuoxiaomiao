@@ -13,10 +13,10 @@ from astrbot.core.agent.tool import ToolSet
 from astrbot.core.provider.entities import LLMResponse, TokenUsage
 from quart import Quart
 
-from main import ActivityEntry
+from infra.constants import ActivityEntry
 from resident.autonomy import CURRENT_RUN, BudgetProvider
-from resident_fixtures import ScriptedProvider, build_runner, conversation
-from test_plugin_logic import make_plugin, FakeContext, FakeEvent
+from tests.resident_fixtures import ScriptedProvider, build_runner, conversation, tool
+from tests.fakes import FakeContext, FakeEvent, make_plugin
 
 # 外部插件集成测试：对应插件未安装时整个模块跳过，不阻断默认测试发现。
 try:
@@ -27,12 +27,10 @@ try:
 
     _EXTERNAL_IMPORTS_OK = True
 except ImportError:
+    AstrHeFunctionTool = None
     _EXTERNAL_IMPORTS_OK = False
 
 
-@unittest.skipUnless(
-    _EXTERNAL_IMPORTS_OK, "需要已安装的 astrbot_plugin_astrhe 才能运行集成测试"
-)
 class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
     def make(self, **config):
         # 关闭静默时段（start==end）：凌晨跑套件时，触发路径会被静默判断拦下、
@@ -44,7 +42,7 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
             proactive_allow_groups=["20001"],
             **config,
         )
-        p._record_activity(
+        p.activity.record_activity(
             ActivityEntry(
                 platform_id="aiocqhttp",
                 kind="group",
@@ -61,8 +59,8 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
     async def wake(self, p, responses, tools, hooks=None, mode="full"):
         provider = ScriptedProvider(responses)
-        p._select_self_wake_provider = AsyncMock(return_value=provider)
-        p._build_self_wake_agent_config = lambda event: SimpleNamespace(
+        p.self_wake.select_provider = AsyncMock(return_value=provider)
+        p.self_wake.build_agent_config = lambda event: SimpleNamespace(
             tool_schema_mode=mode
         )
         if hooks is not None:
@@ -72,10 +70,10 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
             return await build_runner(**kwargs, tools=tools, native_executor=True)
 
         with (
-            patch("main._build_main_agent", build),
-            patch("main._get_session_conv", AsyncMock(return_value=conversation())),
+            patch("resident.ports.build_main_agent", build),
+            patch("resident.ports._get_session_conv", AsyncMock(return_value=conversation())),
         ):
-            outcome = await p._run_self_wake_turn(30, 0.5, 0.1)
+            outcome = await p.self_wake.run_turn(30, 0.5, 0.1)
         return outcome, provider
 
     @staticmethod
@@ -96,6 +94,7 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
             usage=TokenUsage(input_other=10, output=2),
         )
 
+    @unittest.skipUnless(_EXTERNAL_IMPORTS_OK, "需要已安装的 astrbot_plugin_astrhe 才能运行集成测试")
     async def test_native_executor_reads_existing_astrhe_plan_with_secrecy(self):
         p = self.make()
         plans = SimpleNamespace(
@@ -127,6 +126,7 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("私聊中的秘密", receipt["result"])
         self.assertEqual(len(provider.calls), 2)
 
+    @unittest.skipUnless(_EXTERNAL_IMPORTS_OK, "需要已安装的 astrbot_plugin_astrhe 才能运行集成测试")
     async def test_astrhe_scope_filter_runs_before_runner_reset_and_never_returns(self):
         p = self.make(resident_extra_tools=["future_task"])
         injector = Injector(
@@ -155,14 +155,16 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_skills_like_requery_preserves_parameter_schema_and_guard(self):
         p = self.make()
-        update = AstrHeFunctionTool(
-            name="nuoxiaomiao_update_state",
-            parameters={
-                "type": "object",
-                "properties": {"mood": {"type": "string"}},
-                "required": ["mood"],
-            },
-            fn=AsyncMock(return_value="已更新"),
+        update = (
+            AstrHeFunctionTool(
+                name="nuoxiaomiao_update_state",
+                parameters={"type": "object", "properties": {"mood": {"type": "string"}}, "required": ["mood"]},
+                fn=AsyncMock(return_value="已更新"),
+            ) if AstrHeFunctionTool is not None else tool(
+                "nuoxiaomiao_update_state",
+                AsyncMock(return_value="已更新"),
+                {"type": "object", "properties": {"mood": {"type": "string"}}, "required": ["mood"]},
+            )
         )
         result, provider = await self.wake(
             p,
@@ -196,12 +198,12 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
         ]:
             with self.subTest(expected=expected):
                 p = self.make()
-                p._generate_in_target_context = AsyncMock(return_value="实际发送内容")
+                p.proactive.generate_in_target_context = AsyncMock(return_value="实际发送内容")
                 p.context.send_message = AsyncMock(
                     side_effect=delivery if isinstance(delivery, Exception) else None,
                     return_value=delivery,
                 )
-                send = AstrHeFunctionTool(name="send_message", fn=p.send_message)
+                send = AstrHeFunctionTool(name="send_message", fn=p.send_message) if AstrHeFunctionTool is not None else tool("send_message", p.send_message)
                 outcome, _ = await self.wake(
                     p,
                     [self.call("send_message", {"intent": "问候"}), self.end()],
@@ -230,8 +232,8 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 return await super().text_chat(**kwargs)
 
         provider = Slow([self.call("send_message", {"intent": "不可发送"})])
-        send = AstrHeFunctionTool(name="send_message", fn=AsyncMock(return_value="bad"))
-        p._select_self_wake_provider = AsyncMock(return_value=provider)
+        send = AstrHeFunctionTool(name="send_message", fn=AsyncMock(return_value="bad")) if AstrHeFunctionTool is not None else tool("send_message", AsyncMock(return_value="bad"))
+        p.self_wake.select_provider = AsyncMock(return_value=provider)
         p.resident.autonomy.dispatch_request_hooks = AsyncMock(return_value=False)
 
         async def build(**kwargs):
@@ -240,10 +242,10 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
             )
 
         with (
-            patch("main._build_main_agent", build),
-            patch("main._get_session_conv", AsyncMock(return_value=conversation())),
+            patch("resident.ports.build_main_agent", build),
+            patch("resident.ports._get_session_conv", AsyncMock(return_value=conversation())),
         ):
-            task = asyncio.create_task(p._run_self_wake_turn(30, 0.5, 0.1))
+            task = asyncio.create_task(p.self_wake.run_turn(30, 0.5, 0.1))
             await asyncio.wait_for(started.wait(), 2)
             rid = next(iter(p.resident.autonomy.runs))
             await p.resident.autonomy.control(rid, "pause")
@@ -319,9 +321,9 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
         p = self.make()
         p.context.get_config = lambda **kwargs: {"plugin_set": ["another_plugin"]}
         provider = ScriptedProvider()
-        p._select_self_wake_provider = AsyncMock(return_value=provider)
-        self.assertEqual(await p._run_self_wake_turn(30, 0.5, 0.1), (True, "skipped"))
-        p._select_self_wake_provider.assert_not_called()
+        p.self_wake.select_provider = AsyncMock(return_value=provider)
+        self.assertEqual(await p.self_wake.run_turn(30, 0.5, 0.1), (True, "skipped"))
+        p.self_wake.select_provider.assert_not_called()
         self.assertEqual(provider.calls, [])
 
     async def test_api_proposal_conflict_keeps_current_and_review_resolves_unknown(
@@ -372,7 +374,7 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
         async def recall(event, req):
             called.append("memory")
-            p._append_temp_context(req, "已有记忆检索结果")
+            p.ctx_injector.append_temp_context(req, "已有记忆检索结果")
 
         async def compress(event, req):
             called.append("astrna")
@@ -437,14 +439,14 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
         )
         event.message_obj.sender.user_id = "10001"
         event.set_extra("nuoxiaomiao_self_wake", True)
-        self.assertEqual(p._current_conversation(event), ("other", "private", "30001"))
-        target = p._resolve_proactive_target(event, "")
+        self.assertEqual(p.activity.current_conversation(event), ("other", "private", "30001"))
+        target = p.targets.resolve_target(event, "")
         self.assertEqual(target["id"], "30001")
         self.assertEqual(target["umo"], "other:FriendMessage:30001")
 
     async def test_group_record_scope_can_select_one_platform_with_same_number(self):
         p = self.make(activity_group_whitelist=["other:GroupMessage:20001"])
-        p._record_activity(
+        p.activity.record_activity(
             ActivityEntry(
                 platform_id="other",
                 kind="group",
@@ -462,7 +464,7 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
     async def test_revoked_plugin_and_dynamic_addition_do_not_expand_current_run(self):
         from resident.autonomy import ScopedExecutor, Run
         from astrbot.core.provider.entities import ProviderRequest
-        from resident_fixtures import TestExecutor, tool
+        from tests.resident_fixtures import TestExecutor, tool
 
         p = self.make(resident_extra_tools=["safe_edit"])
         edit = tool("safe_edit", AsyncMock(return_value="edited"))

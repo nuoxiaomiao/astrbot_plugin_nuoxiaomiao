@@ -2,22 +2,9 @@ import time
 import unittest
 from types import SimpleNamespace
 
-from main import ActivityEntry
 from resident.topic import Topic
-from test_plugin_logic import make_plugin, FakeContext
-from resident_fixtures import ScriptedProvider
-
-
-def fake_provider_manager(provider):
-    return type(
-        "PM",
-        (),
-        {
-            "get_provider_by_id": None,
-            "get_using_provider": lambda *a, **k: provider,
-            "get_using_provider_async": None,
-        },
-    )()
+from tests.fakes import FakeContext, fake_provider_manager, gather_bg as asyncio_gather_bg, make_plugin, record_activity
+from tests.resident_fixtures import ScriptedProvider
 
 
 class TopicTest(unittest.IsolatedAsyncioTestCase):
@@ -27,20 +14,7 @@ class TopicTest(unittest.IsolatedAsyncioTestCase):
         return p
 
     def record(self, p, text, sender="9", name="", mentioned=False):
-        return p._record_activity(
-            ActivityEntry(
-                ts=time.time(),
-                sender_id=sender,
-                sender_name=name,
-                conversation_id="20001",
-                conversation_name="20001",
-                kind="group",
-                text=text,
-                platform_id="aiocqhttp",
-                message_id=f"mid-{time.time_ns()}",
-                mentioned=mentioned,
-            )
-        )
+        return record_activity(p, text, sender=sender, name=name, mentioned=mentioned)
 
     def seed(self, p, count, min_unread=5):
         setattr(p, "topic_min_unread", min_unread)
@@ -165,14 +139,6 @@ class TopicTest(unittest.IsolatedAsyncioTestCase):
         second = await p.resident.topic.maybe_summarize(umo)
         self.assertFalse(second)
         self.assertEqual(p.resident.store.topic_state(umo)["topic"], "在聊周末")
-
-
-async def asyncio_gather_bg(p):
-    import asyncio
-
-    tasks = list(p._resident_bg_tasks)
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 if __name__ == "__main__":

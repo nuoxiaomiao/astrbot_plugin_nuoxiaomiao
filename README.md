@@ -163,7 +163,7 @@ AstrBot 消息合并、整轮发送排队、对话守卫、会话信箱、自主
 
 - `master_umo` 显式指定主脑会话（完整 `平台ID:GroupMessage:群号` 或 `平台ID:FriendMessage:QQ`）。
 - 留空且开启 `master_auto_bind`（默认开启）时，首次收到管理员私聊消息自动把该会话绑定为主脑并持久化。
-- 静默自醒轮次不抢主脑锁、不重绑主脑，只在自己的会话里思考，写完小结才排队写回。
+- 静默自醒轮次不抢主脑锁、不重绑主脑，也不会把独白写回主脑会话；执行过程与结果记入自主运行台账。
 
 ### 未读信箱分流
 
@@ -183,7 +183,7 @@ AstrBot 消息合并、整轮发送排队、对话守卫、会话信箱、自主
 开启后，后台轻量模型把一段未读聊天压成一句话题，注入会话清单（`list_conversations` 的 `topic` 字段）与点名通知卡；单会话视角读取时也会附带 `topic`。概括是分段的：每攒够一段（`topic_segment_msg_count`）落一条记录，游标推进；冷却期内不重复概括，避免高频群反复烧模型。
 
 - `topic_light_provider_id`：指定话题模型；留空使用会话默认模型，指定模型不可用时本轮跳过、不自动换模型。
-- `topic_min_unread` / `topic_cooldown_seconds` / `topic_max_chars` / `topic_line_max_chars` / `topic_timeout_seconds` / `topic_segment_msg_count` / `topic_segment_backfill_max` 控制触发与长度。
+- `topic_min_unread`（话题游标之后至少攒够多少条新消息才触发一次概括，不区分已读/未读）与 `topic_cooldown_seconds` / `topic_max_chars` / `topic_line_max_chars` / `topic_timeout_seconds` / `topic_segment_msg_count` / `topic_segment_backfill_max` 共同控制触发与长度。
 - `topic_segment_backfill_max` 是「除本段外多带多少条后续消息做衔接」：这些行会一起进模型输入，但游标只推进到本段末尾，所以不会丢消息。
 - 概括失败（超时、无模型、输出无法解析）只跳过本轮，不落段、不推游标；失败后同一会话 60 秒内不再重试，避免每条消息都烧一次模型。
 - 积压太多（待概括超过两个分段）时直接改看最近的一段，日志会记录跳过了多少条，避免话题长期停在很久以前。

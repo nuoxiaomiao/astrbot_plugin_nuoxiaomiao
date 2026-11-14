@@ -1,35 +1,13 @@
-import asyncio
 import os
 import tempfile
 import time
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 
 from astrbot.core.message.components import Image
 
-from main import ActivityEntry
-from test_plugin_logic import make_plugin, FakeContext, FakeEvent
-from resident_fixtures import ScriptedProvider
-
-
-def image_file(directory, name="photo.png", body=b"\x89PNG\x0d\x0a\x1a\x0a\x00\x00\x00\x0dIHDR"):
-    path = Path(directory) / name
-    path.write_bytes(body)
-    return str(path)
-
-
-def fake_provider_manager(provider):
-    """最小 provider_manager 桩：只支持同步 get_using_provider 兜底。"""
-    return type(
-        "PM",
-        (),
-        {
-            "get_provider_by_id": None,
-            "get_using_provider": lambda *a, **k: provider,
-            "get_using_provider_async": None,
-        },
-    )()
+from tests.fakes import FakeContext, FakeEvent, fake_provider_manager, gather_bg as wait_bg, image_file, make_plugin, record_activity
+from tests.resident_fixtures import ScriptedProvider
 
 
 class VisionTest(unittest.IsolatedAsyncioTestCase):
@@ -39,25 +17,7 @@ class VisionTest(unittest.IsolatedAsyncioTestCase):
         return p
 
     def record(self, p, mid="m1", sender="9"):
-        return p._record_activity(
-            ActivityEntry(
-                ts=time.time(),
-                sender_id=sender,
-                sender_name="某人",
-                conversation_id="20001",
-                conversation_name="20001",
-                kind="group",
-                text="看这张图",
-                platform_id="aiocqhttp",
-                message_id=mid,
-            )
-        )
-
-    async def wait_bg(self, p):
-        """等待插件后台任务（识图转述）全部完成。"""
-        tasks = list(p._resident_bg_tasks)
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        return record_activity(p, "", sender=sender, mid=mid)
 
     async def test_keep_message_images_persists_and_indexes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -195,7 +155,7 @@ class VisionTest(unittest.IsolatedAsyncioTestCase):
             await p.resident.vision.keep_message_images(
                 FakeEvent(components=[Image(file=img)]), activity_id, "m1"
             )
-            await self.wait_bg(p)
+            await wait_bg(p)
             event = FakeEvent(sender_id="10001", is_admin=True)
             raw = await p.read_image(event, conversation=umo, message_id=activity_id, index=0)
             self.assertIn("白色", raw)

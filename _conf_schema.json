@@ -667,7 +667,8 @@
     "type": "list",
     "default": [],
     "hint": "旧版迁移用，已隐藏。",
-    "group": "自醒"
+    "group": "自醒",
+    "invisible": true
   },
   "proactive_silent_wake_allow_tools": {
     "description": "【自醒】使用完整工具",
@@ -828,7 +829,8 @@
     "type": "bool",
     "default": false,
     "hint": "自动维护。",
-    "group": "高级"
+    "group": "高级",
+    "invisible": true
   },
   "resident_run_token_limit": {
     "description": "【自醒】单轮 token 上限",

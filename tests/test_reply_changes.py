@@ -7,8 +7,8 @@ from astrbot.core.message.components import Image, Plain, Reply
 from astrbot.core.message.message_event_result import MessageChain, MessageEventResult, ResultContentType
 from astrbot.core.provider.entities import ProviderRequest
 
-from main import SEND_OBSERVER_EXTRA, SYNTHETIC_EVENT_EXTRA
-from test_plugin_logic import FakeEvent, make_plugin, fetch_activity_rows
+from infra.constants import SEND_OBSERVER_EXTRA, SYNTHETIC_EVENT_EXTRA
+from tests.fakes import FakeEvent, fetch_activity_rows, make_plugin
 
 
 def llm_result(text):
@@ -44,7 +44,7 @@ class ReplyChangesTest(unittest.IsolatedAsyncioTestCase):
         plugin = self.plugin()
         event = FakeEvent()
         event.send = AsyncMock(side_effect=RuntimeError("send failed"))
-        plugin._ensure_send_observer(event)
+        plugin.send_observer.ensure_send_observer(event)
         with self.assertRaises(RuntimeError):
             await event.send(MessageChain([Plain("没发成功")]))
         self.assertEqual(fetch_activity_rows(plugin, sender_id="bot"), [])
@@ -98,7 +98,7 @@ class ReplyChangesTest(unittest.IsolatedAsyncioTestCase):
             await base_send(message)
 
         event.send = tracker
-        plugin._ensure_send_observer(event)
+        plugin.send_observer.ensure_send_observer(event)
         await event.send(MessageChain([Reply(id="real-message"), Plain("回复")]))
         self.assertIsNone(event.get_extra("_outputpro_pending_reply"))
         replies = [comp.id for comp in event.sent[0].chain if isinstance(comp, Reply)]
@@ -107,9 +107,9 @@ class ReplyChangesTest(unittest.IsolatedAsyncioTestCase):
     async def test_record_scope_applies_to_regular_and_proactive_messages(self):
         plugin = self.plugin(activity_group_blacklist=["20001"])
         event = FakeEvent()
-        plugin._ensure_send_observer(event)
+        plugin.send_observer.ensure_send_observer(event)
         await event.send(MessageChain([Plain("群里回复")]))
-        plugin._record_proactive_activity({"target_kind": "group", "target_id": "20001", "target_name": "群"}, "主动回复")
+        plugin.proactive.record_proactive_activity({"target_kind": "group", "target_id": "20001", "target_name": "群"}, "主动回复")
         self.assertEqual(fetch_activity_rows(plugin, sender_id="bot"), [])
 
     async def test_partial_failure_only_records_successful_bubbles(self):
@@ -136,8 +136,8 @@ class ReplyChangesTest(unittest.IsolatedAsyncioTestCase):
         plugin = self.plugin()
         event = FakeEvent()
         original = event.send
-        first = plugin._ensure_send_observer(event)
-        self.assertIs(first, plugin._ensure_send_observer(event))
+        first = plugin.send_observer.ensure_send_observer(event)
+        self.assertIs(first, plugin.send_observer.ensure_send_observer(event))
         await event.send(MessageChain([Plain("一次")]))
         await plugin.after_reply_sent(event)
         self.assertEqual(event.send, original)
@@ -180,7 +180,7 @@ class ReplyChangesTest(unittest.IsolatedAsyncioTestCase):
         plugin = self.plugin(debounce_slow_idle_seconds=float("inf"), proactive_silent_wake_target_mean_minutes=float("nan"))
         self.assertEqual(plugin.debounce_slow_idle_seconds, 1.2)
         self.assertEqual(plugin.proactive_silent_wake_target_mean_minutes, 30)
-        self.assertIn("debounce_slow_idle_seconds", plugin._runtime_config_errors)
+        self.assertIn("debounce_slow_idle_seconds", plugin.cfg.errors)
 
 
 if __name__ == "__main__":

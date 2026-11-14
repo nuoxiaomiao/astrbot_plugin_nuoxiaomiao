@@ -8,13 +8,12 @@
 - 93：主脑锁等待超时降级、失败不泄漏。
 """
 
-import time
 import unittest
 
 from astrbot.core.message.components import At, AtAll, Plain, Reply
 
-from main import ActivityEntry, NO_BRAIN_EXTRA
-from test_plugin_logic import make_plugin, FakeContext, FakeEvent
+from infra.constants import NO_BRAIN_EXTRA
+from tests.fakes import FakeContext, FakeEvent, make_plugin, record_activity
 
 
 class SharedFixesTest(unittest.IsolatedAsyncioTestCase):
@@ -24,20 +23,7 @@ class SharedFixesTest(unittest.IsolatedAsyncioTestCase):
         return p
 
     def record(self, p, text, sender="9", mid="", mentioned=False):
-        return p._record_activity(
-            ActivityEntry(
-                ts=time.time(),
-                sender_id=sender,
-                sender_name="某人",
-                conversation_id="20001",
-                conversation_name="20001",
-                kind="group",
-                text=text,
-                platform_id="aiocqhttp",
-                message_id=mid or f"mid-{time.time_ns()}",
-                mentioned=mentioned,
-            )
-        )
+        return record_activity(p, text, sender=sender, mid=mid, mentioned=mentioned)
 
     # ------------------------------------------------------------------
     # C1：mentioned 只认真实 @
@@ -46,32 +32,32 @@ class SharedFixesTest(unittest.IsolatedAsyncioTestCase):
     def test_at_all_is_not_a_mention(self):
         p = self.make()
         event = FakeEvent(components=[AtAll(qq="all"), Plain("公告")])
-        self.assertFalse(p._mentioned_by_real_at(event))
+        self.assertFalse(p.activity.mentioned_by_real_at(event))
 
     def test_real_at_to_bot_is_a_mention(self):
         p = self.make()
         event = FakeEvent(components=[At(qq="bot"), Plain("在吗")])
         event.is_at_or_wake_command = False
-        self.assertTrue(p._mentioned_by_real_at(event))
+        self.assertTrue(p.activity.mentioned_by_real_at(event))
 
     def test_at_to_someone_else_is_not_a_mention(self):
         p = self.make()
         event = FakeEvent(components=[At(qq="10002"), Plain("问他")])
         event.is_at_or_wake_command = False
-        self.assertFalse(p._mentioned_by_real_at(event))
+        self.assertFalse(p.activity.mentioned_by_real_at(event))
 
     def test_reply_to_bot_is_a_mention(self):
         p = self.make()
         event = FakeEvent(components=[Reply(id="m1", sender_id="bot"), Plain("接着说")])
         event.is_at_or_wake_command = False
-        self.assertTrue(p._mentioned_by_real_at(event))
+        self.assertTrue(p.activity.mentioned_by_real_at(event))
 
     def test_wake_prefix_text_is_a_mention(self):
         p = self.make()
         event = FakeEvent(message_str="小喵你看这个", components=[Plain("小喵你看这个")])
         event.is_at_or_wake_command = False
         # 唤醒前缀是「小喵」，q=叫了名字也算叫机器人。
-        self.assertTrue(p._mentioned_by_real_at(event))
+        self.assertTrue(p.activity.mentioned_by_real_at(event))
 
     # ------------------------------------------------------------------
     # C2：当前这条不算未读
@@ -120,7 +106,7 @@ class SharedFixesTest(unittest.IsolatedAsyncioTestCase):
             topic_summary_enabled=True,
             activity_buffer_enabled=False,
         )
-        codes = {item["code"] for item in p._configuration_diagnostics()}
+        codes = {item["code"] for item in p.config_svc.diagnostics()}
         self.assertIn("inbox_requires_recording", codes)
         self.assertIn("topic_requires_recording", codes)
 
@@ -130,7 +116,7 @@ class SharedFixesTest(unittest.IsolatedAsyncioTestCase):
             topic_summary_enabled=True,
             activity_buffer_enabled=True,
         )
-        codes = {item["code"] for item in p._configuration_diagnostics()}
+        codes = {item["code"] for item in p.config_svc.diagnostics()}
         self.assertNotIn("inbox_requires_recording", codes)
         self.assertNotIn("topic_requires_recording", codes)
 

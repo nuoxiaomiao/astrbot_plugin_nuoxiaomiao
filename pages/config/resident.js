@@ -1,7 +1,4 @@
-/* 糯小喵 · 运行与状态（Win11 风格重做）。
- * 原则：先摘要后细节；运行记录默认收起、一次展开一条；长文本点开再看。
- * 保持与宿主一致的桥接契约（win.AstrBotPluginPage.apiGet/apiPost）。
- */
+/* 糯小喵 · 运行与状态（Win11 风格）。 */
 (function (root, factory) {
   'use strict';
   var api = factory();
@@ -16,13 +13,14 @@
     skipped: '已跳过', limited: '达到限制', sent: '发送成功', sending: '发送中',
     spoke: '已发言', quiet: '安静结束', approved: '已批准', rejected: '已拒绝',
     ready: '可用', unavailable: '不可用', out_of_scope: '当前范围不可用',
-    fired: '已发送', 'succeeded-action': '已完成'
+    fired: '已发送', 'succeeded-action': '已完成',
   };
   function unwrap(value) { return value && value.data ? value.data : value || {}; }
+  function isSafeUrl(url) { return /^(\/|https?:\/\/)/i.test(String(url || '').trim()); }
 
   function mount(host, win) {
     var doc = win.document;
-    var data = null, umo = '', before = 0, sequence = 0, busy = false;
+    var data = null, umo = '', before = 0, sequence = 0, busy = false, destroyed = false;
     var filter = 'all', expandedRun = null;
 
     function node(tag, cls, text) {
@@ -34,6 +32,7 @@
     function button(text, fn, cls) {
       var n = node('button', cls, text);
       n.type = 'button';
+      if (busy) n.disabled = true;
       n.addEventListener('click', fn);
       return n;
     }
@@ -49,10 +48,10 @@
       c.appendChild(b);
       return b;
     }
-    function row(label, desc, control) {
+    function row(labelText, desc, control) {
       var r = node('div', 'row');
       var copy = node('div', 'row-copy');
-      copy.appendChild(node('label', 'row-label', label));
+      copy.appendChild(node('label', 'row-label', labelText));
       if (desc) copy.appendChild(node('p', 'row-desc', desc));
       r.appendChild(copy);
       var ctl = node('div', 'row-control');
@@ -60,10 +59,10 @@
       r.appendChild(ctl);
       return r;
     }
-    function blockRow(label, desc, control) {
+    function blockRow(labelText, desc, control) {
       var r = node('div', 'row block');
       var copy = node('div', 'row-copy');
-      copy.appendChild(node('label', 'row-label', label));
+      copy.appendChild(node('label', 'row-label', labelText));
       if (desc) copy.appendChild(node('p', 'row-desc', desc));
       r.appendChild(copy);
       var ctl = node('div', 'row-control');
@@ -114,32 +113,44 @@
       return det;
     }
 
-    async function load() {
+    async function load(append) {
       var seq = ++sequence;
       try {
         var response = unwrap(await win.AstrBotPluginPage.apiGet('resident', { umo: umo, before: before }));
-        if (seq !== sequence) return;
+        if (destroyed || seq !== sequence) return;
         if (response.operation_error) throw new Error(response.operation_error);
+        if (append && data) {
+          var seen = {};
+          var merged = [];
+          (data.runs || []).concat(response.runs || []).forEach(function (r) {
+            if (!seen[r.id]) { seen[r.id] = true; merged.push(r); }
+          });
+          response.runs = merged;
+        }
         data = response; umo = data.umo || ''; render();
       } catch (exc) {
-        error('读取失败：' + (exc.message || '请重试'));
+        if (!destroyed) error('读取失败：' + (exc.message || '请重试'));
       }
     }
     async function act(payload) {
-      if (busy) return;
+      if (busy || destroyed) return;
+
       busy = true;
+      var seq = ++sequence;
       try {
         var response = unwrap(await win.AstrBotPluginPage.apiPost('resident', Object.assign({ umo: umo }, payload)));
+        if (destroyed || seq !== sequence) return;
         if (response.operation_error) throw new Error(response.operation_error);
         data = response; before = 0; render();
       } catch (exc) {
-        error('操作未完成：' + (exc.message || '请重试'));
+        if (!destroyed) error('操作未完成：' + (exc.message || '请重试'));
       } finally {
         busy = false;
       }
     }
 
     function render() {
+      if (destroyed) return;
       host.replaceChildren();
       if (!data) { host.appendChild(node('p', 'empty', '正在读取自主运行数据…')); return; }
       var sessions = data.sessions || [];
@@ -155,7 +166,6 @@
       });
       var pendingTotal = unknownSends.length + unknownRunSends.length + unknownActions.length + pendingProposals.length;
 
-      /* 工具栏 */
       var bar = node('div', 'toolbar');
       var picker = node('select');
       picker.id = 'resident-session';
@@ -166,13 +176,12 @@
         picker.appendChild(opt);
       });
       picker.value = umo;
-      picker.addEventListener('change', function () { umo = picker.value; before = 0; load(); });
+      picker.addEventListener('change', function () { umo = picker.value; before = 0; load(false); });
       bar.appendChild(picker);
-      bar.appendChild(button('刷新', load, 'btn'));
+      bar.appendChild(button('刷新', function () { before = 0; load(false); }, 'btn'));
       bar.appendChild(node('span', 'muted', '今日自醒 ' + (budget.used || 0) + ' 次 · token ' + fmt(budget.tokens || 0) + (budget.unknown ? ' · 部分用量未知' : '')));
       host.appendChild(bar);
 
-      /* 统计块 */
       var tiles = node('div', 'tiles');
       tiles.appendChild(tile(String(budget.used || 0), '今日自醒', 'tile-wake'));
       tiles.appendChild(tile(fmt(budget.tokens || 0), '今日 token', 'tile-token'));
@@ -282,7 +291,7 @@
       if (!shown.length) list.appendChild(node('p', 'empty', '没有符合筛选的运行记录。'));
       c.appendChild(list);
       if (data.next_before) {
-        var more = button('加载更早的记录', function () { before = data.next_before; load(); }, 'btn');
+        var more = button('加载更早的记录', function () { before = data.next_before; load(true); }, 'btn');
         more.id = 'load-more';
         var holder = node('div', 'card-body');
         holder.appendChild(more);
@@ -463,9 +472,9 @@
         item.appendChild(title);
         item.appendChild(node('p', 'mini-meta', cap.source + '：' + cap.reason));
         if (cap.tools && cap.tools.length) item.appendChild(node('p', 'mini-meta', '工具：' + cap.tools.join('、')));
-        if (cap.url) {
+        if (cap.url && isSafeUrl(cap.url)) {
           var link = node('a', '', '打开 ' + cap.source + ' 管理页');
-          link.href = cap.url; link.target = '_blank'; link.rel = 'noopener';
+          link.href = cap.url; link.target = '_blank'; link.rel = 'noopener noreferrer';
           item.appendChild(link);
         }
         b.appendChild(item);
@@ -474,8 +483,8 @@
     }
 
     host.appendChild(node('p', 'empty', '正在读取自主运行数据…'));
-    load();
-    return { reload: load };
+    load(false);
+    return { reload: function () { return load(false); }, destroy: function () { destroyed = true; } };
   }
 
   return { mount: mount, labels: labels };

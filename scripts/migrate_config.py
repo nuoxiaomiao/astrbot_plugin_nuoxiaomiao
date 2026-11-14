@@ -4,11 +4,9 @@ import argparse
 import sys
 from pathlib import Path
 
-
 try:
     from config_support import migrate_config_dir
 except ModuleNotFoundError:
-    # Support invoking this file directly from outside the plugin directory.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from config_support import migrate_config_dir
 
@@ -24,25 +22,20 @@ def _default_config_dir() -> Path:
 
         return Path(get_astrbot_data_path()) / "config"
     except Exception as exc:
-        raise RuntimeError(
-            "无法定位 AstrBot 配置目录，请使用 --config-dir 指定"
-        ) from exc
+        raise RuntimeError("无法定位 AstrBot 配置目录，请使用 --config-dir 指定") from exc
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="迁移糯小喵插件旧配置文件")
-    parser.add_argument(
-        "--config-dir",
-        type=Path,
-        help="AstrBot data/config 目录；省略时自动定位",
-    )
-    parser.add_argument(
-        "--user-default",
-        type=Path,
-        help="同时迁移个人默认快照；省略时不读取插件外的快照路径",
-    )
+    parser.add_argument("--config-dir", type=Path, help="AstrBot data/config 目录；省略时自动定位")
+    parser.add_argument("--user-default", type=Path, help="同时迁移个人默认快照；省略时不读取插件外的快照路径")
     args = parser.parse_args()
-    print(migrate_config(args.config_dir or _default_config_dir(), args.user_default))
+    try:
+        target_dir = args.config_dir or _default_config_dir()
+        print(migrate_config(target_dir, args.user_default))
+    except Exception as exc:
+        print(f"迁移失败: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

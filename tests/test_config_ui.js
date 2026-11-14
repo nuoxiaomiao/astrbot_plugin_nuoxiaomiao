@@ -21,7 +21,7 @@ test('deriveGroups covers every schema key exactly once', () => {
       collected.push(key);
     }
   }
-  const hidden = ['proactive_min_delay_minutes', 'proactive_silent_wake_tool_plugins', 'resident_tools_migrated'];
+  const hidden = ['proactive_silent_wake_tool_plugins', 'resident_tools_migrated'];
   for (const key of Object.keys(schema)) {
     if (hidden.includes(key)) continue;
     if (key === 'activity_prefetch_enabled' || key === 'capability_context_digest') continue;
@@ -173,12 +173,13 @@ function fixture(config = {}, customPost, metadata = {}, residentData = null) {
   document.documentElement = document.createElement('html');
   document.getElementById = id => document.documentElement.querySelector('#' + id);
   document.querySelectorAll = selector => document.documentElement.querySelectorAll(selector);
-  const ids = ['app', 'groups', 'status-root', 'nav', 'search', 'search-clear', 'timezone', 'banner', 'diagnostics', 'error-summary', 'dirty', 'save-detail', 'save', 'revert', 'restore-factory', 'savebar', 'boot', 'toast'];
+  const ids = ['app', 'groups', 'status-root', 'nav', 'search', 'search-clear', 'timezone', 'banner', 'diagnostics', 'error-summary', 'dirty', 'save-detail', 'clear-default', 'apply-default', 'save-default', 'save', 'revert', 'restore-factory', 'savebar', 'boot', 'toast'];
   for (const id of ids) { const el = document.createElement(id === 'search' ? 'input' : 'div'); el.id = id; document.documentElement.appendChild(el); }
-  const calls = [], reads = [], storage = new Map();
+  const calls = [], reads = [], storage = new Map(), ctxListeners = [];
   const window = {
     document,
     events: {},
+    location: { search: metadata.locationSearch || '' },
     addEventListener(type, listener) { (this.events[type] ||= []).push(listener); },
     localStorage: {
       getItem(key) { return storage.has(key) ? storage.get(key) : null; },
@@ -186,6 +187,7 @@ function fixture(config = {}, customPost, metadata = {}, residentData = null) {
     },
     AstrBotPluginPage: {
       async ready() {},
+      onContext(fn) { ctxListeners.push(fn); },
       async apiGet(endpoint, params) {
         reads.push({ endpoint, params: copy(params) });
         if (endpoint === 'resident') {
@@ -209,7 +211,7 @@ function fixture(config = {}, customPost, metadata = {}, residentData = null) {
   };
   window.NuoxiaomiaoResidentPanel = residentPanel;
   ui.mount(window);
-  return { document, window, calls, reads, storage, get: id => document.getElementById(id) };
+  return { document, window, calls, reads, storage, ctxListeners, get: id => document.getElementById(id) };
 }
 
 const settled = () => new Promise(resolve => setImmediate(resolve));
@@ -495,4 +497,175 @@ test('session switch reloads that conversation', async () => {
   picker.value = 'qq:GroupMessage:1';
   picker.dispatch('change'); await settled();
   assert.equal(panel.reads[1].params.umo, 'qq:GroupMessage:1');
+});
+
+test('index.html declares every required DOM ID and classic deferred module scripts', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../pages/config/index.html'), 'utf8');
+  const requiredIds = [
+    'app', 'groups', 'status-root', 'nav', 'search', 'search-clear', 'timezone',
+    'banner', 'diagnostics', 'error-summary', 'dirty', 'save-detail',
+    'clear-default', 'apply-default', 'save-default', 'restore-factory', 'revert', 'save',
+    'savebar', 'boot', 'toast',
+  ];
+  for (const id of requiredIds) {
+    assert.ok(html.includes(`id="${id}"`), `index.html missing id="${id}"`);
+  }
+  assert.ok(html.includes('<script defer src="./schema_state.js"></script>'));
+  assert.ok(html.includes('<script defer src="./controls.js"></script>'));
+  assert.ok(html.includes('<script defer src="./resident.js"></script>'));
+  assert.ok(html.includes('<script defer src="./app.js"></script>'));
+});
+
+test('config/default buttons save, apply, and clear user default snapshots', async () => {
+  const page = fixture({ trigger_rounds: 3 }, (endpoint, body) => {
+    if (endpoint === 'config/default' && body.clear) {
+      return { status: 'ok', data: { cleared: true } };
+    }
+    if (endpoint === 'config/default') {
+      return { status: 'ok', data: { config: { ...defaults, ...body.config }, user_default: { ...body.config } } };
+    }
+    return { status: 'ok', data: { config: { ...defaults, ...(body && body.config || {}) } } };
+  });
+  await settled();
+  assert.equal(page.get('clear-default').hidden, true);
+  assert.equal(page.get('apply-default').disabled, true);
+  assert.equal(page.get('save-default').disabled, false);
+
+  navItem(page, 'interaction').dispatch('click');
+  const rounds = page.get('input-trigger_rounds');
+  rounds.value = '7'; rounds.dispatch('input');
+  page.get('save-default').dispatch('click');
+  await settled();
+
+  const defCall = page.calls.find(c => c.endpoint === 'config/default' && !c.body.clear);
+  assert.ok(defCall);
+  assert.equal(defCall.body.config.trigger_rounds, 7);
+  assert.equal(page.get('clear-default').hidden, false);
+  assert.equal(page.get('apply-default').disabled, false);
+
+  rounds.value = '2'; rounds.dispatch('input');
+  page.get('apply-default').dispatch('click');
+  assert.equal(String(page.get('input-trigger_rounds').value), '7');
+
+  page.get('clear-default').dispatch('click');
+  await settled();
+  assert.ok(page.calls.some(c => c.endpoint === 'config/default' && c.body.clear === true));
+  assert.equal(page.get('clear-default').hidden, true);
+  assert.equal(page.get('apply-default').disabled, true);
+});
+
+test('theme syncs from ?theme= query param and AstrBotPluginPage.onContext', async () => {
+  const page = fixture({}, undefined, { locationSearch: '?theme=dark' });
+  await settled();
+  assert.equal(page.document.documentElement.dataset.theme, 'dark');
+  assert.equal(page.ctxListeners.length, 1);
+  page.ctxListeners[0]({ theme: 'light' });
+  assert.equal(page.document.documentElement.dataset.theme, 'light');
+});
+
+test('switching away from status and back preserves mounted resident DOM node', async () => {
+  const page = fixture({}, undefined, {}, residentFixtureData());
+  await settled();
+  statusNav(page).dispatch('click');
+  await settled();
+  const rootBefore = page.get('resident-root');
+  assert.ok(rootBefore);
+  navItem(page, 'overview').dispatch('click');
+  assert.equal(page.get('status-root').hidden, true);
+  statusNav(page).dispatch('click');
+  assert.equal(page.get('status-root').hidden, false);
+  assert.strictEqual(page.get('resident-root'), rootBefore);
+});
+
+test('multi-gate cluster pending count tracks all gate keys', async () => {
+  const page = fixture({ include_group: true, include_private: true });
+  await settled();
+  navItem(page, 'interaction').dispatch('click');
+  check(page, 'include_group', false);
+  check(page, 'include_private', false);
+  assert.equal(page.get('cluster-pending-guard').textContent, '待保存 2 项');
+});
+
+test('string booleans parse cleanly and focusField warns when target is hidden by gate', async () => {
+  const page = fixture(
+    { enabled: 'false', debounce_dynamic_enabled: false },
+    undefined,
+    { diagnostics: [{ code: 'hidden', severity: 'warning', message: '隐藏提示', fields: ['debounce_fast_idle_seconds'] }] }
+  );
+  await settled();
+  assert.equal(page.get('input-enabled').checked, false);
+  assert.equal(ui.parseBool('false'), false);
+  assert.equal(ui.parseBool('0'), false);
+  assert.equal(ui.parseBool('true'), true);
+  findButton(page.get('diagnostics'), '查看设置').dispatch('click');
+  assert.ok(page.get('toast').textContent.includes('当前被条件开关隐藏'));
+});
+
+test('resident append pagination merges runs, rejects unsafe capability URLs, and handles concurrent guards', async () => {
+  const data1 = residentFixtureData();
+  data1.capabilities = [
+    { title: '安全页', source: 'AstrHe', state: 'ready', reason: 'ok', url: '/#/plugin-view/astrhe', tools: [] },
+    { title: '危险页', source: 'Evil', state: 'ready', reason: 'xss', url: 'javascript:alert(1)', tools: [] },
+  ];
+  const data2 = {
+    ...residentFixtureData(),
+    runs: [{ id: 5, status: 'succeeded', outcome: 'quiet', started: 10, ended: 20, umo: 'qq:GroupMessage:1', input_other: 0, input_cached: 0, output: 0, usage_unknown: 0, summary: '更早记录', tool_requests: [], sends: [], deferred: [], actions: [] }],
+    next_before: 0,
+  };
+  const page = fixture({}, undefined, {}, data1);
+  await settled();
+  const root = page.document.createElement('div');
+  page.document.documentElement.appendChild(root);
+
+  let getCount = 0;
+  let resolveSlowGet;
+  page.window.AstrBotPluginPage.apiGet = (endpoint, params) => {
+    getCount += 1;
+    if (getCount === 1) return Promise.resolve(copy(data1));
+    if (params.before === 8) return Promise.resolve(copy(data2));
+    return new Promise(resolve => { resolveSlowGet = resolve; });
+  };
+  let resolveAct;
+  const actPayloads = [];
+  page.window.AstrBotPluginPage.apiPost = (endpoint, body) => {
+    actPayloads.push(copy(body));
+    return new Promise(resolve => { resolveAct = resolve; });
+  };
+
+  residentPanel.mount(root, page.window);
+  await settled();
+
+  const links = root.querySelectorAll('a');
+  assert.equal(links.length, 1);
+  assert.equal(links[0].href, '/#/plugin-view/astrhe');
+
+  findButton(root, '加载更早的记录').dispatch('click');
+  await settled();
+  assert.ok(root.querySelector('#run-row-9'));
+  assert.ok(root.querySelector('#run-row-5'));
+
+  // Trigger stale load then interrupt with act(): stale load result must be ignored, and second act() ignored while busy.
+  const picker = root.querySelector('#resident-session');
+  picker.value = 'qq:GroupMessage:1';
+  picker.dispatch('change');
+  findButton(root, '保存当前状态').dispatch('click');
+  findButton(root, '保存当前状态').dispatch('click');
+  assert.equal(actPayloads.length, 1);
+
+  resolveSlowGet({ ...copy(data1), runs: [{ id: 999, status: 'failed', outcome: '', started: 1, ended: 2, umo: 'qq:GroupMessage:1', input_other: 0, input_cached: 0, output: 0, usage_unknown: 0, summary: 'stale', tool_requests: [], sends: [], deferred: [], actions: [] }] });
+  await settled();
+  assert.equal(root.querySelector('#run-row-999'), null);
+
+  resolveAct(copy(data1));
+  await settled();
+  assert.ok(root.querySelector('#run-row-9'));
+});
+
+test('style.css defines cluster header, subblock alignment, and search input padding rules', () => {
+  const css = fs.readFileSync(path.join(__dirname, '../pages/config/style.css'), 'utf8');
+  assert.ok(css.includes('.cluster-title-wrap'));
+  assert.ok(css.includes('.cluster-actions'));
+  assert.ok(css.includes('.gate-control'));
+  assert.ok(css.includes('.subblock-count') && css.includes('margin-right: auto'));
+  assert.ok(css.includes('.search-wrap input[type="search"]'));
 });

@@ -22,6 +22,7 @@ from config_support import (
     preload_config_migration,
 )
 from main import NuoxiaomiaoPlugin
+from tests.fakes import FakeContext, make_plugin
 
 
 SCHEMA = json.loads((Path(__file__).resolve().parents[1] / "_conf_schema.json").read_text(encoding="utf-8-sig"))
@@ -43,24 +44,22 @@ class StoredConfig(dict):
 
 
 def backend_plugin(directory: Path, **config) -> NuoxiaomiaoPlugin:
-    plugin = object.__new__(NuoxiaomiaoPlugin)
     values = {key: spec["default"] for key, spec in SCHEMA.items()}
     values.update(config)
-    plugin.config = StoredConfig(directory / "config.json", values)
+    stored = StoredConfig(directory / "config.json", values)
+    plugin = make_plugin(context=FakeContext(), **values)
+    plugin.config = stored
     plugin.user_default_config_path = str(directory / "user-default.json")
-    plugin.context = SimpleNamespace(
-        get_all_providers=lambda: [],
-        get_llm_tool_manager=lambda: SimpleNamespace(get_full_tool_set=lambda: SimpleNamespace(tools=[])),
-    )
-    from resident.service import ResidentServices
-    plugin.resident = ResidentServices(plugin)
+    plugin.context.get_all_providers = lambda: []
+    plugin.context.get_llm_tool_manager = lambda: SimpleNamespace(get_full_tool_set=lambda: SimpleNamespace(tools=[]))
     plugin.applies = 0
+    orig_apply = plugin.config_svc.apply
 
-    def apply():
+    def tracked_apply():
         plugin.applies += 1
-        plugin._runtime_config = normalize_config(plugin.config, SCHEMA, runtime=True)[0]
+        return orig_apply()
 
-    plugin._apply_config = apply
+    plugin.config_svc.apply = tracked_apply
     return plugin
 
 
@@ -143,18 +142,19 @@ class ConfigCompatibilityTest(unittest.TestCase):
     def test_invalid_native_image_directory_uses_the_runtime_default(self):
         from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
-        plugin = object.__new__(NuoxiaomiaoPlugin)
-        plugin.config = {"merge_localize_images_dir": {"unexpected": "directory"}}
-        plugin._runtime_config, errors = normalize_config(plugin.config, SCHEMA, runtime=True)
-        self.assertIn("merge_localize_images_dir", errors)
+        from config_support import build_plugin_config
+        cfg = build_plugin_config(
+            {"merge_localize_images_dir": {"unexpected": "directory"}},
+            SCHEMA,
+            lambda: Path(get_astrbot_plugin_data_path()) / "astrbot_plugin_nuoxiaomiao",
+        )
+        self.assertIn("merge_localize_images_dir", cfg.errors)
         expected = (
             Path(get_astrbot_plugin_data_path())
             / "astrbot_plugin_nuoxiaomiao"
             / "merged_images"
         )
-        with patch.object(Path, "mkdir"):
-            target = plugin._resolve_localize_images_dir()
-        self.assertEqual(target, expected)
+        self.assertEqual(cfg.merge_localize_images_dir, expected)
 
 
 class ConfigApiTest(unittest.IsolatedAsyncioTestCase):
@@ -163,7 +163,7 @@ class ConfigApiTest(unittest.IsolatedAsyncioTestCase):
         async with app.test_request_context("/config", method="POST" if body is not None else "GET", json=body):
             from quart import g
             g.username = "admin"  # 模拟平台认证（审查 P0-1）
-            result = await getattr(plugin, method)()
+            result = await getattr(plugin.config_svc, method.lstrip("_"))()
             response, status = result if isinstance(result, tuple) else (result, 200)
             return await response.get_json(), status
 
@@ -245,7 +245,7 @@ class ConfigApiTest(unittest.IsolatedAsyncioTestCase):
             native.save_config()
             reloaded = AstrBotConfig(config_path=str(plugin.config.path), schema=SCHEMA)
             plugin.config = reloaded
-            plugin._apply_config()
+            plugin.apply_config()
             dedicated, status = await self.call_api(plugin, "_webapi_get_config")
             self.assertEqual(status, 200)
             for key in SCHEMA:
@@ -294,7 +294,7 @@ class ConfigApiTest(unittest.IsolatedAsyncioTestCase):
             owners = {selected_module: SimpleNamespace(name="registered_selected"),
                       disabled_module: SimpleNamespace(name="registered_disabled")}
             with patch("astrbot.core.star.star.star_map", owners):
-                catalog = plugin._tool_plugin_catalog()
+                catalog = plugin.config_svc.tool_plugin_catalog()
             self.assertEqual(catalog, [
                 {"name": "registered_selected", "builtin": False,
                  "tools": ["selected_enabled"], "count": 1},
@@ -336,7 +336,7 @@ class ConfigApiTest(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             plugin = backend_plugin(Path(tmp))
             before = dict(plugin.config)
-            with patch("main.atomic_write_json", side_effect=OSError("snapshot failed")):
+            with patch("config_service.atomic_write_json", side_effect=OSError("snapshot failed")):
                 data, status = await self.call_api(plugin, "_webapi_save_default", {"config": {"enabled": False}})
             self.assertEqual(status, 500)
             self.assertEqual(dict(plugin.config), before)
@@ -346,7 +346,7 @@ class ConfigApiTest(unittest.IsolatedAsyncioTestCase):
     async def test_active_write_failure_rolls_back_snapshot_and_memory(self):
         with tempfile.TemporaryDirectory() as tmp:
             plugin = backend_plugin(Path(tmp))
-            snapshot = plugin._user_default_config_path()
+            snapshot = plugin.config_svc.user_default_path()
             original = b'{"enabled": true, "label": "original"}'
             snapshot.write_bytes(original)
             before = dict(plugin.config)
@@ -361,10 +361,10 @@ class ConfigApiTest(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             plugin = backend_plugin(Path(tmp))
             before = dict(plugin.config)
-            snapshot = plugin._user_default_config_path()
+            snapshot = plugin.config_svc.user_default_path()
             original = b'{"enabled": true}'
             snapshot.write_bytes(original)
-            with patch.object(plugin, "_apply_config", side_effect=[RuntimeError("apply failed"), None]):
+            with patch.object(plugin.config_svc, "apply", side_effect=[RuntimeError("apply failed"), None]):
                 data, status = await self.call_api(plugin, "_webapi_save_default", {"config": {"enabled": False}})
             self.assertEqual(status, 500)
             self.assertEqual(dict(plugin.config), before)
@@ -374,7 +374,7 @@ class ConfigApiTest(unittest.IsolatedAsyncioTestCase):
     async def test_default_clear_failure_is_an_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             plugin = backend_plugin(Path(tmp))
-            with patch.object(plugin, "_clear_user_default_config", side_effect=OSError("clear failed")):
+            with patch.object(plugin.config_svc, "clear_user_default", side_effect=OSError("clear failed")):
                 data, status = await self.call_api(plugin, "_webapi_save_default", {"clear": True})
             self.assertEqual(status, 500)
             self.assertEqual(data["status"], "error")

@@ -14,8 +14,8 @@ from unittest.mock import AsyncMock, Mock
 from astrbot.core.message.components import At, Nodes, Plain, Reply
 from astrbot.core.message.message_event_result import MessageChain, MessageEventResult, ResultContentType
 
-from main import SEND_OBSERVER_EXTRA, SYNTHETIC_EVENT_EXTRA
-from test_plugin_logic import FakeContext, FakeEvent, fetch_activity_rows, make_plugin
+from infra.constants import SEND_OBSERVER_EXTRA, SYNTHETIC_EVENT_EXTRA
+from tests.fakes import FakeContext, FakeEvent, fetch_activity_rows, make_plugin
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -62,7 +62,8 @@ class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
             activity_db_path=str(Path(self.directory.name) / "activity.db"),
             merge_localize_images=False,
         )
-        self.plugin._record_bot_reply = Mock(wraps=self.plugin._record_bot_reply)
+        self.plugin.activity.record_bot_reply = Mock(wraps=self.plugin.activity.record_bot_reply)
+        self.plugin.send_observer._record_bot_reply = self.plugin.activity.record_bot_reply
         self.addAsyncCleanup(self.plugin.terminate)
 
     def output(self, steps, overrides=None):
@@ -118,7 +119,7 @@ class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.get_result().get_plain_text().rstrip("。"), "第三段")
         self.assertEqual(event.get_extra(SEND_OBSERVER_EXTRA)["attempted"], 2)
         await event.send(event.get_result())
-        self.assertEqual(self.plugin._record_bot_reply.call_count, 3)
+        self.assertEqual(self.plugin.activity.record_bot_reply.call_count, 3)
         await self.plugin.after_reply_sent(event)
         self.assertFalse(event.get_extra(SEND_OBSERVER_EXTRA)["active"])
 
@@ -132,8 +133,8 @@ class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
         await self.plugin.observe_outgoing_result(event)
         await event.send(MessageChain().message("你好。"))
         self.assertTrue(any(isinstance(item, Reply) and item.id == "original-source" for item in event.sent[0].chain))
-        self.assertEqual(self.plugin._record_bot_reply.call_args.args[1], "你好。")
-        self.plugin._finish_send_observer(event)
+        self.assertEqual(self.plugin.activity.record_bot_reply.call_args.args[1], "你好。")
+        self.plugin.send_observer.finish_send_observer(event)
 
     async def test_synthetic_uuid_is_never_used_for_automatic_reply(self):
         event = self.event()
@@ -152,7 +153,7 @@ class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_tool_status_does_not_prevent_final_split_or_enter_records(self):
         event = self.event("最终回复。")
-        self.plugin._ensure_send_observer(event)
+        self.plugin.send_observer.ensure_send_observer(event)
         await event.send(MessageChain(type="tool_call").message("工具执行状态"))
         event._result = MessageEventResult(
             chain=[Plain("第一段。第二段。")],
@@ -169,7 +170,7 @@ class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.get_result().get_plain_text(), "")
         self.assertEqual(event.sent, [])
         self.assertEqual(self.recorded_texts(), [])
-        self.plugin._finish_send_observer(event)
+        self.plugin.send_observer.finish_send_observer(event)
 
     async def test_outputpro_blocked_body_is_neither_sent_nor_recorded(self):
         event = self.event("这里出现禁止内容，后面的正文也不应发出。")
@@ -181,7 +182,7 @@ class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.sent, [])
         self.assertEqual(event.get_extra(SEND_OBSERVER_EXTRA)["attempted"], 0)
         self.assertEqual(self.recorded_texts(), [])
-        self.plugin._finish_send_observer(event)
+        self.plugin.send_observer.finish_send_observer(event)
 
     async def test_real_at_conversion_survives_cleaning_and_split_delivery(self):
         event = self.event("[at:10002][动作]这是需要艾特发出的实际正文。")
@@ -213,7 +214,7 @@ class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
         async def out_of_band():
             # Wait for first split segment
             await asyncio.sleep(0.02)
-            async with self.plugin._send_order.one_shot(event.unified_msg_origin):
+            async with self.plugin.send_order.one_shot(event.unified_msg_origin):
                 order.append("one-shot")
 
         task = asyncio.create_task(out_of_band())
@@ -252,7 +253,7 @@ class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
             await event.send(event.get_result())
         self.assertEqual(event.get_extra(SEND_OBSERVER_EXTRA)["attempted"], 1)
         self.assertEqual(self.recorded_texts(), [])
-        self.plugin._finish_send_observer(event)
+        self.plugin.send_observer.finish_send_observer(event)
 
     async def test_all_preceding_split_failures_leave_tail_without_human_retake(self):
         event = self.event()
@@ -263,7 +264,7 @@ class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "split platform failure"):
             await event.send(event.get_result())
         self.assertEqual(self.recorded_texts(), [])
-        self.plugin._finish_send_observer(event)
+        self.plugin.send_observer.finish_send_observer(event)
 
     async def test_partial_split_failure_records_only_delivered_first_and_tail(self):
         event = self.event()

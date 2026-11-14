@@ -1,27 +1,43 @@
-"""Composition and authenticated AstrBot Plugin Page endpoints."""
+"""Composition root and single dashboard API for resident capabilities."""
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
+import json
+import time
 from types import SimpleNamespace
 
 from quart import jsonify, request
 
-from .store import Store, Conflict, MOODS
-from .inbox import Inbox
-from .persona import Persona
-from .integration import Integration
-from .autonomy import Autonomy
-from .vision import Vision
-from .topic import Topic
-from .master import Master
+if __package__ and "." in __package__:
+    from ..infra.constants import PLUGIN_NAME
+    from .autonomy import Autonomy
+    from .inbox import Inbox
+    from .integration import Integration
+    from .master import Master
+    from .persona import Persona
+    from .ports import ResidentHost
+    from .store import MOODS, Conflict, Store
+    from .topic import Topic
+    from .vision import Vision
+else:
+    from infra.constants import PLUGIN_NAME
+    from resident.autonomy import Autonomy
+    from resident.inbox import Inbox
+    from resident.integration import Integration
+    from resident.master import Master
+    from resident.persona import Persona
+    from resident.ports import ResidentHost
+    from resident.store import MOODS, Conflict, Store
+    from resident.topic import Topic
+    from resident.vision import Vision
 
 
 class ResidentServices:
     def __init__(self, plugin):
         self.plugin = plugin
-        self.store = Store(plugin)
+        self.host = ResidentHost(plugin)
+        self.store = Store(self.host)
         self.persona = Persona(self)
         self.inbox = Inbox(self)
         self.integration = Integration(self)
@@ -29,111 +45,100 @@ class ResidentServices:
         self.vision = Vision(self)
         self.topic = Topic(self)
         self.master = Master(self)
-        self.seen_personas = {}
+
+    def register(self):
+        self.host.context.register_web_api(f"/{PLUGIN_NAME}/resident", self.get, ["GET"], "读取糯小喵自主运行状态")
+        self.host.context.register_web_api(f"/{PLUGIN_NAME}/resident", self.mutate, ["POST"], "操作糯小喵自主运行与人设状态")
 
     async def initialize(self):
         self.store.recover()
         self.integration.migrate_selection()
 
-    def register(self):
-        base = "/astrbot_plugin_nuoxiaomiao/resident"
-        self.plugin.context.register_web_api(
-            base, self.get, ["GET"], "糯小喵自主运行与状态"
-        )
-        self.plugin.context.register_web_api(
-            base, self.mutate, ["POST"], "糯小喵状态、提案与运行控制"
-        )
-
-    def web_event(self, umo):
-        parts = str(umo).split(":", 2)
-        if (
-            len(parts) != 3
-            or parts[1] not in ("GroupMessage", "FriendMessage")
-            or not parts[2]
-        ):
-            raise ValueError("请选择完整会话 ID")
-        extras = {}
+    def web_event(self, umo: str):
+        parts = str(umo or "").split(":", 2)
+        if len(parts) != 3:
+            raise ValueError("需要完整的会话标识")
+        kind = parts[1]
+        if kind == "GroupMessage":
+            is_private = False
+        elif kind == "FriendMessage":
+            is_private = True
+        else:
+            # 兼容扩展平台会话类型（如频道/临时会话），避免崩溃。
+            is_private = "friend" in kind.lower() or "private" in kind.lower() or "c2c" in kind.lower() or "dm" in kind.lower()
         return SimpleNamespace(
-            get_extra=lambda key, default=None: extras.get(key, default),
-            set_extra=lambda key, value: extras.__setitem__(key, value),
-            is_stopped=lambda: False,
             unified_msg_origin=umo,
             get_platform_name=lambda: parts[0],
             get_platform_id=lambda: parts[0],
+            get_group_id=lambda: "" if is_private else parts[2],
+            get_sender_id=lambda: parts[2] if is_private else "",
+            is_private_chat=lambda: is_private,
+            is_admin=lambda: False,
+            get_extra=lambda _k, default=None: default,
+            role="member",
         )
 
-    async def snapshot(self, umo="", before=0):
-        sessions = self.plugin._activity_sessions("all")
+    @staticmethod
+    def _batch_by_run_id(rows: list[dict], key: str = "run_id") -> dict[int, list[dict]]:
+        grouped: dict[int, list[dict]] = {}
+        for row in rows:
+            grouped.setdefault(int(row[key]), []).append(row)
+        return grouped
+
+    async def snapshot(self, umo: str = "", before: int = 0) -> dict:
+        sessions = self.host.activity_sessions("all")
         for s in sessions:
-            s["name"] = self.plugin._display_conversation_name(
-                s["platform_id"],
-                s["kind"],
-                s["conversation_id"],
-                s.get("name", ""),
+            s["label"] = self.host.display_conversation_name(
+                s["platform_id"], s["kind"], s["conversation_id"], s.get("name", "")
             )
-            s["umo"] = (
-                f"{s['platform_id']}:{'GroupMessage' if s['kind'] == 'group' else 'FriendMessage'}:{s['conversation_id']}"
-            )
+            s["topic"] = self.topic.session_topic(s["umo"]) if self.plugin.topic_summary_enabled else ""
         if not umo and sessions:
             umo = sessions[0]["umo"]
-        persona = ""
-        base_hash = ""
-        state = None
+        persona = base_hash = ""
+        state = {"persona": "", "umo": umo, "mood": None, "focus": ""}
         style = {"version": 0, "body": ""}
-        proposals = []
-        versions = []
+        proposals = versions = []
         if umo:
             persona, base_hash = await self.persona.resolve(self.web_event(umo))
-            state = (
-                None
-                if persona.startswith("@session:")
-                else self.store.state(persona, umo)
-            )
+            state = self.store.state(persona, umo)
             style = self.store.style(persona)
-            proposals = self.store.rows(
-                "SELECT * FROM resident_proposals WHERE persona=? ORDER BY id DESC LIMIT 50",
-                (persona,),
-            )
-            from difflib import unified_diff
-
-            for proposal in proposals:
-                proposal["diff"] = "\n".join(
-                    unified_diff(
-                        style["body"].splitlines(),
-                        proposal["body"].splitlines(),
-                        fromfile="当前风格",
-                        tofile="建议风格",
-                        lineterm="",
-                    )
-                )
-            versions = self.store.rows(
-                "SELECT version,body,created FROM resident_style_versions WHERE persona=? ORDER BY version DESC LIMIT 50",
-                (persona,),
-            )
+            proposals = self.store.persona_repo.proposals_with_diff(persona, style["body"])
+            versions = self.store.persona_repo.versions(persona)
             for s in sessions:
                 s.update(self.inbox.counts(persona, s))
         runs = self.store.rows(
             "SELECT * FROM resident_runs WHERE (?=0 OR id<?) ORDER BY id DESC LIMIT 50",
             (before, before),
         )
+        run_ids = [int(r["id"]) for r in runs]
+        if run_ids:
+            ph = ",".join("?" for _ in run_ids)
+            tr_map = self._batch_by_run_id(
+                self.store.rows(f"SELECT * FROM resident_tool_requests WHERE run_id IN ({ph}) ORDER BY id", tuple(run_ids))
+            )
+            act_map = self._batch_by_run_id(
+                self.store.rows(f"SELECT * FROM resident_actions WHERE run_id IN ({ph}) ORDER BY id", tuple(run_ids))
+            )
+            send_map = self._batch_by_run_id(
+                self.store.rows(f"SELECT * FROM resident_sends WHERE run_id IN ({ph}) ORDER BY id", tuple(run_ids))
+            )
+            def_map = self._batch_by_run_id(
+                self.store.rows(
+                    f"SELECT d.run_id, p.id,p.status,p.target_umo,p.fire_ts,p.note FROM proactive_pending p JOIN resident_deferred d ON d.pending_id=p.id WHERE d.run_id IN ({ph}) ORDER BY p.id",
+                    tuple(run_ids),
+                )
+            )
+        else:
+            tr_map = act_map = send_map = def_map = {}
+
         for run in runs:
-            run["tool_requests"] = self.store.rows(
-                "SELECT * FROM resident_tool_requests WHERE run_id=? ORDER BY id",
-                (run["id"],),
-            )
-            run["actions"] = self.store.rows(
-                "SELECT * FROM resident_actions WHERE run_id=? ORDER BY id",
-                (run["id"],),
-            )
-            run["sends"] = self.store.rows(
-                "SELECT * FROM resident_sends WHERE run_id=? ORDER BY id", (run["id"],)
-            )
-            run["deferred"] = self.store.rows(
-                "SELECT p.id,p.status,p.target_umo,p.fire_ts,p.note FROM proactive_pending p JOIN resident_deferred d ON d.pending_id=p.id WHERE d.run_id=? ORDER BY p.id",
-                (run["id"],),
-            )
-            if run["id"] in self.autonomy.runs:
-                run["status"] = self.autonomy.runs[run["id"]].status
+            rid = int(run["id"])
+            run["tool_requests"] = tr_map.get(rid, [])
+            run["actions"] = act_map.get(rid, [])
+            run["sends"] = send_map.get(rid, [])
+            run["deferred"] = def_map.get(rid, [])
+            if rid in self.autonomy.runs:
+                run["status"] = self.autonomy.runs[rid].status
         return {
             "umo": umo,
             "persona": persona,
@@ -156,16 +161,7 @@ class ResidentServices:
         }
 
     def _auth_ok(self) -> bool:
-        """插件级纵深防御：要求 AstrBot 平台已把认证用户名注入请求上下文。
-
-        AstrBot 4.29 的插件扩展路由本身要求 JWT，但 handler 内再做一次
-        显式校验，防止未来平台把插件 API 暴露在未鉴权路径（审查 C1/H2）。
-        """
-        try:
-            username = self.plugin._webapi_username()
-        except AttributeError:
-            return True  # 旧版插件对象没有该 helper 时保持平台默认行为
-        return bool(username)
+        return bool(self.host.webapi_username())
 
     def _auth_denied(self):
         return jsonify({"status": "error", "message": "未登录或登录已过期"}), 401
@@ -186,7 +182,10 @@ class ResidentServices:
         if not self._auth_ok():
             return self._auth_denied()
         try:
-            body = await request.get_json()
+            raw_text = await request.get_data(as_text=True)
+            body = await request.get_json(silent=True)
+            if body is None and raw_text.strip():
+                raise ValueError("请求体必须是合法 JSON")
             if not isinstance(body, dict):
                 raise ValueError("请求必须是对象")
             action = body.get("action")
@@ -198,14 +197,14 @@ class ResidentServices:
                 if conclusion not in ("succeeded", "failed"):
                     raise ValueError("核实结果须为 succeeded / failed")
                 note = str(body.get("note", "")).strip()
-                if not note or len(note) > 2000:
-                    raise ValueError("请填写实际核实依据，最多 2000 字")
+                if len(note) > 2000:
+                    raise ValueError("核实依据最多 2000 字")
                 with self.store.transaction() as db:
                     updated = db.execute(
                         "UPDATE resident_actions SET status=?,result=result || ?,ended=? WHERE id=? AND status='unknown'",
                         (
                             conclusion,
-                            "\n管理员核实：" + note,
+                            "\n管理员核实：" + (note or "已人工确认"),
                             datetime.now().timestamp(),
                             int(body.get("action_id", 0)),
                         ),
@@ -215,17 +214,12 @@ class ResidentServices:
             elif action == "review_resident_send":
                 conclusion = body.get("conclusion")
                 note = str(body.get("note", "")).strip()
-                if conclusion not in ("sent", "failed") or not note or len(note) > 2000:
-                    raise ValueError("请填写核实结果与依据")
+                if conclusion not in ("sent", "failed") or len(note) > 2000:
+                    raise ValueError("核实结果须为 sent / failed，依据最多 2000 字")
                 with self.store.transaction() as db:
                     updated = db.execute(
                         "UPDATE resident_sends SET status=?,detail=?,ended=? WHERE id=? AND status='unknown'",
-                        (
-                            conclusion,
-                            note,
-                            datetime.now().timestamp(),
-                            int(body.get("send_id", 0)),
-                        ),
+                        (conclusion, note or "管理员已人工核实", datetime.now().timestamp(), int(body.get("send_id", 0))),
                     )
                     if updated.rowcount != 1:
                         raise Conflict("发送不存在或已经核实")
@@ -235,8 +229,8 @@ class ResidentServices:
                     raise ValueError("核实结果须为 fired / failed")
                 with self.store.transaction() as db:
                     updated = db.execute(
-                        "UPDATE proactive_pending SET status=? WHERE id=? AND status='unknown'",
-                        (conclusion, int(body.get("send_id", 0))),
+                        "UPDATE proactive_pending SET status=?,done_ts=? WHERE id=? AND status='unknown'",
+                        (conclusion, time.time(), int(body.get("send_id", 0))),
                     )
                     if updated.rowcount != 1:
                         raise Conflict("该发送记录不存在或已核实")
@@ -268,7 +262,12 @@ class ResidentServices:
             if action in ("review", "review_resident_send"):
                 with self.store.transaction() as db:
                     db.execute(
-                        "UPDATE resident_runs SET status='interrupted',summary=summary || '；未知动作已由管理员核实' WHERE status='unknown' AND NOT EXISTS (SELECT 1 FROM resident_actions a WHERE a.run_id=resident_runs.id AND a.status='unknown') AND NOT EXISTS (SELECT 1 FROM resident_sends s WHERE s.run_id=resident_runs.id AND s.status='unknown') AND EXISTS (SELECT 1 FROM resident_actions a WHERE a.run_id=resident_runs.id)"
+                        "UPDATE resident_runs SET status='interrupted',summary=summary || '；未知动作已由管理员核实' "
+                        "WHERE status='unknown' "
+                        "AND NOT EXISTS (SELECT 1 FROM resident_actions a WHERE a.run_id=resident_runs.id AND a.status='unknown') "
+                        "AND NOT EXISTS (SELECT 1 FROM resident_sends s WHERE s.run_id=resident_runs.id AND s.status='unknown') "
+                        "AND (EXISTS (SELECT 1 FROM resident_actions a WHERE a.run_id=resident_runs.id) "
+                        "OR EXISTS (SELECT 1 FROM resident_sends s WHERE s.run_id=resident_runs.id))"
                     )
             return jsonify({"status": "ok", "data": await self.snapshot(umo)})
         except (ValueError, TypeError, KeyError) as exc:
@@ -282,9 +281,7 @@ class ResidentServices:
         if persona.startswith("@session:"):
             raise ValueError("当前会话没有可管理的人设")
         return json.dumps(
-            self.store.update_state(
-                persona, event.unified_msg_origin, mood, intensity, focus
-            ),
+            self.store.update_state(persona, event.unified_msg_origin, mood, intensity, focus),
             ensure_ascii=False,
         )
 

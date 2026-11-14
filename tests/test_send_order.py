@@ -12,7 +12,7 @@ from astrbot.core.message.message_event_result import MessageChain, MessageEvent
 
 from main import SEND_OBSERVER_EXTRA
 from send_order import SendOrderGate
-from tests.test_plugin_logic import FakeContext, FakeEvent, make_plugin
+from tests.fakes import FakeContext, FakeEvent, make_plugin
 
 # 生产代码按「AstrNa 主模块的模块命名空间」取轮次 ContextVar：
 # 测试里让假的 AstrNa 插件类也定义在本模块，于是这里就是那个命名空间。
@@ -566,7 +566,7 @@ class SendOrderWithPluginTest(unittest.IsolatedAsyncioTestCase):
         await plugin.observe_outgoing_result(event)
 
         async def out_of_band():
-            async with plugin._send_order.one_shot(umo):
+            async with plugin.send_order.one_shot(umo):
                 order.append("proactive")
 
         # First segment acquires the round lease; out-of-band send must wait
@@ -686,7 +686,7 @@ class RealAstrNaGateTest(unittest.IsolatedAsyncioTestCase):
             debounce_enabled=False,
         )
         self.addAsyncCleanup(plugin.terminate)
-        self.assertTrue(plugin._send_order.is_astrna_backend())
+        self.assertTrue(plugin.send_order.is_astrna_backend())
 
         log = []
         lock = self.real_owner.get_group_send_lock(self.UMO)

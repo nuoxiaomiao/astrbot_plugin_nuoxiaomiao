@@ -17,8 +17,8 @@ from astrbot.core.message.message_event_result import (
 )
 
 import outputpro_split
-from test_plugin_logic import FakeContext, fetch_activity_rows, make_plugin
-from test_qq_official import QQOfficialFakeEvent
+from tests.fakes import FakeContext, fetch_activity_rows, make_plugin
+from tests.test_qq_official import QQOfficialFakeEvent
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 try:
@@ -27,7 +27,7 @@ try:
     from astrbot_plugin_outputpro.core.model import StateManager
     from astrbot_plugin_outputpro.core.step.split import SplitStep
     from astrbot_plugin_outputpro.main import OutputPlugin
-    from test_outputpro_integration import output_defaults
+    from tests.test_outputpro_integration import output_defaults
 
     _EXTERNAL_IMPORTS_OK = True
 except ImportError:
@@ -208,7 +208,7 @@ class OutputproSplitQQOfficialTest(unittest.IsolatedAsyncioTestCase):
         # 3. _ensure_send_observer() 兜底自动重打
         SplitStep.support_platforms = set(self._orig_support_platforms)
         event2 = self.make_qq_event()
-        self.plugin._ensure_send_observer(event2)
+        self.plugin.send_observer.ensure_send_observer(event2)
         self.assertTrue(
             outputpro_split.ADDED_PLATFORMS <= set(SplitStep.support_platforms)
         )

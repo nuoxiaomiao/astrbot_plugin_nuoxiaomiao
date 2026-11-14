@@ -2,8 +2,8 @@ import unittest
 
 from astrbot.core.provider.entities import ProviderRequest
 
-from main import SELF_WAKE_EVENT_EXTRA
-from test_plugin_logic import make_plugin, FakeContext, FakeEvent
+from infra.constants import SELF_WAKE_EVENT_EXTRA
+from tests.fakes import FakeContext, FakeEvent, make_plugin
 
 
 class StubConversation:

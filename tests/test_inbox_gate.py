@@ -3,9 +3,8 @@ import unittest
 
 from astrbot.core.message.components import Image, Plain
 
-from main import ActivityEntry, SELF_WAKE_EVENT_EXTRA, SYNTHETIC_EVENT_EXTRA
-from test_plugin_logic import make_plugin, FakeContext, FakeEvent
-from test_vision import image_file
+from infra.constants import SELF_WAKE_EVENT_EXTRA, SYNTHETIC_EVENT_EXTRA
+from tests.fakes import FakeContext, FakeEvent, image_file, make_plugin, record_activity
 
 
 class InboxGateTest(unittest.IsolatedAsyncioTestCase):
@@ -15,24 +14,7 @@ class InboxGateTest(unittest.IsolatedAsyncioTestCase):
         return p
 
     def record(self, p, text, sender="9", mentioned=False, mid="", kind="group"):
-        return p._record_activity(
-            ActivityEntry(
-                ts=time.time(),
-                sender_id=sender,
-                sender_name="某人",
-                conversation_id="20001",
-                conversation_name="20001",
-                kind=kind,
-                text=text,
-                platform_id="aiocqhttp",
-                message_id=mid or f"mid-{time.time_ns()}",
-                mentioned=mentioned,
-            )
-        )
-
-    # ------------------------------------------------------------------
-    # silence_candidate 分流判定
-    # ------------------------------------------------------------------
+        return record_activity(p, text, sender=sender, mentioned=mentioned, mid=mid, kind=kind)
 
     def test_disabled_never_silences(self):
         p = self.make(unread_inbox_enabled=False)
@@ -191,8 +173,8 @@ class InboxGateTest(unittest.IsolatedAsyncioTestCase):
         event = FakeEvent(is_trigger=False, message_str="随便聊聊", message_id="mid-x")
         await p.on_message(event)
         self.assertTrue(event.stopped)
-        await p._capture_chat_activity(event)
-        sessions = p._activity_sessions("group")
+        await p.activity.capture_chat_activity(event)
+        sessions = p.activity.activity_sessions("group")
         self.assertTrue(any(s["messages"] for s in sessions))
 
     async def test_image_only_message_captured_when_vision_enabled(self):
@@ -207,8 +189,8 @@ class InboxGateTest(unittest.IsolatedAsyncioTestCase):
                 components=[Image(file=img)],
                 message_id="mid-img",
             )
-            await p._capture_chat_activity(event)
-            sessions = p._activity_sessions("group")
+            await p.activity.capture_chat_activity(event)
+            sessions = p.activity.activity_sessions("group")
             self.assertTrue(any(s["messages"] for s in sessions))
 
     async def test_image_only_message_not_captured_when_vision_disabled(self):
@@ -219,8 +201,8 @@ class InboxGateTest(unittest.IsolatedAsyncioTestCase):
             components=[Image(file="/nonexistent/x.png")],
             message_id="mid-img",
         )
-        await p._capture_chat_activity(event)
-        sessions = p._activity_sessions("group")
+        await p.activity.capture_chat_activity(event)
+        sessions = p.activity.activity_sessions("group")
         self.assertFalse(any(s["messages"] for s in sessions))
 
 

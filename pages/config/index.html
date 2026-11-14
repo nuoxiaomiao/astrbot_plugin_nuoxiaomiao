@@ -56,6 +56,9 @@
       <small id="save-detail">配置加载后可编辑</small>
     </div>
     <div class="save-actions">
+      <button id="clear-default" class="btn" type="button" disabled hidden>清除我的默认</button>
+      <button id="apply-default" class="btn" type="button" disabled>应用我的默认</button>
+      <button id="save-default" class="btn" type="button" disabled>保存为我的默认</button>
       <button id="restore-factory" class="btn" type="button" disabled>恢复出厂默认</button>
       <button id="revert" class="btn" type="button" disabled>撤销修改</button>
       <button id="save" class="btn primary" type="button" disabled>保存修改</button>
@@ -65,7 +68,9 @@
   <div id="boot" class="boot" role="status"><p>正在读取配置…</p></div>
   <div id="toast" class="toast" role="status" hidden></div>
 
-  <script src="./resident.js"></script>
-  <script src="./app.js"></script>
+  <script defer src="./schema_state.js"></script>
+  <script defer src="./controls.js"></script>
+  <script defer src="./resident.js"></script>
+  <script defer src="./app.js"></script>
 </body>
 </html>

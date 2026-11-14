@@ -6,7 +6,7 @@
 - main.py 里 QQ 官方的适配分支（合成消息透传原始消息对象与入站 msg_id、
   纯文本标记、@ 目标解析、群主动消息门禁、正文清理、新配置项）。
 
-复用 test_plugin_logic.py 的 FakeEvent / FakeContext / make_plugin，只补
+复用 tests/fakes.py 的 FakeEvent / FakeContext / make_plugin，只补
 QQ 官方平台需要的那点差异（平台名、平台实例的 meta()、raw_message）。
 """
 
@@ -19,8 +19,9 @@ from astrbot.core.message.components import At, AtAll, Face, Image, Node, Nodes,
 from astrbot.core.message.message_event_result import MessageChain
 
 import qq_official
-from main import ActivityEntry, MergeSession
-from test_plugin_logic import (
+from infra.constants import ActivityEntry, MergeSession
+from infra.runtime import extract_text
+from tests.fakes import (
     FakeContext,
     FakeEvent,
     FakeProvider,
@@ -314,7 +315,7 @@ class QQOfficialMergedEventTest(unittest.IsolatedAsyncioTestCase):
                 new=create_event,
             ),
         ):
-            await plugin._send_merged_event(session, "你好")
+            await plugin.merger.send_merged_event(session, "你好")
 
         self.assertEqual(len(created), 1)
         # 少了这两项，QQOfficialMessageEvent.send 会静默丢弃整条回复。
@@ -342,7 +343,7 @@ class QQOfficialMergedEventTest(unittest.IsolatedAsyncioTestCase):
                 new=create_event,
             ),
         ):
-            await plugin._send_merged_event(other_session, "你好")
+            await plugin.merger.send_merged_event(other_session, "你好")
 
         self.assertEqual(len(created), 1)
         self.assertIsNone(created[0]["raw_message"])
@@ -359,9 +360,9 @@ class QQOfficialResolveAtTargetTest(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(plugin.terminate)
         resolved = group_resolved("qq_official")
 
-        self.assertEqual(plugin._resolve_at_target(resolved, "123456"), ("", ""))
+        self.assertEqual(plugin.targets.resolve_at_target(resolved, "123456"), ("", ""))
 
-        plugin._record_activity(
+        plugin.activity.record_activity(
             ActivityEntry(
                 ts=time.time(),
                 sender_id=QQ_OPENID,
@@ -374,21 +375,21 @@ class QQOfficialResolveAtTargetTest(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertEqual(
-            plugin._resolve_at_target(resolved, "群友"), (QQ_OPENID, "群友")
+            plugin.targets.resolve_at_target(resolved, "群友"), (QQ_OPENID, "群友")
         )
         # 直接给 openid 也能命中速览库，解析出同一个目标。
         self.assertEqual(
-            plugin._resolve_at_target(resolved, QQ_OPENID), (QQ_OPENID, "群友")
+            plugin.targets.resolve_at_target(resolved, QQ_OPENID), (QQ_OPENID, "群友")
         )
         # 库里查不到的非数字串不瞎猜，宁可不 @。
-        self.assertEqual(plugin._resolve_at_target(resolved, "查无此人"), ("", ""))
+        self.assertEqual(plugin.targets.resolve_at_target(resolved, "查无此人"), ("", ""))
 
         # 对照：aiocqhttp 下数字 QQ 号照旧返回。
         other_context = make_qq_official_context(inst_id="aiocqhttp", name="aiocqhttp")
         other_plugin = make_plugin(context=other_context)
         self.addAsyncCleanup(other_plugin.terminate)
         self.assertEqual(
-            other_plugin._resolve_at_target(group_resolved("aiocqhttp"), "123456"),
+            other_plugin.targets.resolve_at_target(group_resolved("aiocqhttp"), "123456"),
             ("123456", ""),
         )
 
@@ -402,7 +403,7 @@ class QQOfficialProactiveGroupGateTest(unittest.IsolatedAsyncioTestCase):
         plugin = make_plugin(context=context, qq_official_group_proactive=False)
         self.addAsyncCleanup(plugin.terminate)
 
-        result = await plugin._deliver_proactive_message(
+        result = await plugin.proactive.deliver_message(
             group_resolved("qq_official"), "打个招呼"
         )
 
@@ -416,7 +417,7 @@ class QQOfficialProactiveGroupGateTest(unittest.IsolatedAsyncioTestCase):
         plugin = make_plugin(context=context, qq_official_group_proactive=True)
         self.addAsyncCleanup(plugin.terminate)
 
-        result = await plugin._deliver_proactive_message(
+        result = await plugin.proactive.deliver_message(
             group_resolved("qq_official"), "打个招呼"
         )
 
@@ -435,7 +436,7 @@ class QQOfficialProactiveGroupGateTest(unittest.IsolatedAsyncioTestCase):
         plugin = make_plugin(context=context, qq_official_group_proactive=True)
         self.addAsyncCleanup(plugin.terminate)
 
-        result = await plugin._deliver_proactive_message(
+        result = await plugin.proactive.deliver_message(
             group_resolved("qq_official"), "打个招呼"
         )
 
@@ -456,14 +457,14 @@ class QQOfficialExtractTextTest(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(plugin.terminate)
 
         qq_event = QQOfficialFakeEvent(message_str=AT_MARKUP_TEXT)
-        self.assertEqual(plugin._extract_text(qq_event), "你好")
+        self.assertEqual(extract_text(qq_event, strip_at_markup=plugin.qq_official_strip_at_markup), "你好")
 
         other_event = FakeEvent(message_str=AT_MARKUP_TEXT)
-        self.assertEqual(plugin._extract_text(other_event), AT_MARKUP_TEXT)
+        self.assertEqual(extract_text(other_event, strip_at_markup=plugin.qq_official_strip_at_markup), AT_MARKUP_TEXT)
 
         disabled = make_plugin(qq_official_strip_at_markup=False)
         self.addAsyncCleanup(disabled.terminate)
-        self.assertEqual(disabled._extract_text(qq_event), AT_MARKUP_TEXT)
+        self.assertEqual(extract_text(qq_event, strip_at_markup=disabled.qq_official_strip_at_markup), AT_MARKUP_TEXT)
 
 
 class QQOfficialSendObserverTest(unittest.IsolatedAsyncioTestCase):
@@ -474,7 +475,7 @@ class QQOfficialSendObserverTest(unittest.IsolatedAsyncioTestCase):
         plugin = make_plugin(context=make_qq_official_context())
         self.addAsyncCleanup(plugin.terminate)
         event = QQOfficialFakeEvent(message_str="在吗", raw_message=None)
-        plugin._ensure_send_observer(event)
+        plugin.send_observer.ensure_send_observer(event)
 
         delivered = await event.send(MessageChain([Plain("发不出去的回复")]))
         await plugin.after_reply_sent(event)
@@ -502,7 +503,7 @@ class QQOfficialSendObserverTest(unittest.IsolatedAsyncioTestCase):
             event.sent.append(message)
 
         event.send = flaky_send
-        plugin._ensure_send_observer(event)
+        plugin.send_observer.ensure_send_observer(event)
         delivered = await event.send(
             MessageChain([Plain("第一句话来了。第二句话也来。")])
         )
@@ -553,7 +554,7 @@ class QQOfficialConfigTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(plugin.qq_official_quote_trigger)
         self.assertEqual(plugin.qq_official_text_chars, 0)
         self.assertFalse(plugin.qq_official_flatten_forward)
-        self.assertIn(QQ_OPENID, plugin._admin_ids())
+        self.assertIn(QQ_OPENID, plugin.activity.admin_ids())
 
 
 class QQOfficialHelpersAndPipelineTest(unittest.IsolatedAsyncioTestCase):
@@ -665,7 +666,7 @@ class QQOfficialHelpersAndPipelineTest(unittest.IsolatedAsyncioTestCase):
     async def test_prepare_qq_official_event_cleans_and_wakes_on_bot_quote(self):
         plugin = make_plugin(context=make_qq_official_context())
         self.addAsyncCleanup(plugin.terminate)
-        plugin._record_activity(
+        plugin.activity.record_activity(
             ActivityEntry(
                 ts=time.time(),
                 sender_id="bot",
@@ -723,7 +724,7 @@ class QQOfficialHelpersAndPipelineTest(unittest.IsolatedAsyncioTestCase):
             return True
 
         plugin.context.send_message = send_with_concurrent_other_inbound
-        ok, unknown, _detail = await plugin._qq_official_send_by_session(
+        ok, unknown, _detail = await plugin.proactive.qq_official_send_by_session(
             inst, "qq_official:GroupMessage:G1", MessageChain([Plain("hi")]), "G1"
         )
         self.assertFalse(ok)
@@ -734,7 +735,7 @@ class QQOfficialHelpersAndPipelineTest(unittest.IsolatedAsyncioTestCase):
             return True
 
         plugin.context.send_message = send_with_matching_ack
-        ok2, unknown2, _detail2 = await plugin._qq_official_send_by_session(
+        ok2, unknown2, _detail2 = await plugin.proactive.qq_official_send_by_session(
             inst, "qq_official:GroupMessage:G1", MessageChain([Plain("hi")]), "G1"
         )
         self.assertTrue(ok2)

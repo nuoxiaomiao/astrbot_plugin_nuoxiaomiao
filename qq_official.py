@@ -1,47 +1,18 @@
-"""QQ 官方机器人（qq_official / qq_official_webhook）平台适配支持。
-
-本模块只提供纯函数：不 import AstrBot 核心，任何对象只要暴露与 AstrBot 事件
-一致的最小接口（get_platform_name / get_self_id / get_messages 等）即可直接使用，
-因此可以脱离 AstrBot 运行环境做单元测试。
-
-背景事实（AstrBot 4.29.3 qq_official 适配器）：
-- 入站群消息 sender/group 都是 openid；机器人在群内被 @ 时 self_id = 机器人
-  openid，无 mention 时 self_id 为字面量 "qq_official"。
-- 入站私聊（C2C）恒在消息链头部塞一个 At(qq="qq_official") 占位，self_id 为
-  字面量 "unknown_selfid"。
-- 出站 At 只认 openid，且适配器会把它序列化成正文里的
-  <qqbot-at-user id="..." />；数字 QQ 号、"qq_official"/"unknown_selfid"
-  等占位值会被原样发出、成为非法标记。
-- 主动消息（无 msg_id 的推送通道）不会渲染上面那串标记，用户只会看到原始
-  文本。因此本插件的主动消息一律不带 @（见 main.py _deliver_proactive_message），
-  补记速览/历史时同样不写 @。
-- event.send 是被动回复：复用入站 msg_id，窗口 5 分钟（botpy 文档）；
-  群聊主动消息依赖平台"主动消息"权限与配额，且适配器的群场景缓存
-  （_session_scene）为进程内存、重启即丢。
-- 群消息通常不包含 sender nickname / group_name；QQ 官方没有成员资料、历史
-  消息、群列表 API。主动消息/名单/管理员需要使用 openid。
-"""
+"""QQ 官方机器人（qq_official / qq_official_webhook）平台适配支持。"""
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
+import copy
 import re
-from typing import Any
+from typing import Any, Callable
 
-# AstrBot qq_official 平台适配器 meta().name 的可能取值。
 QQ_OFFICIAL_PLATFORM_NAMES = frozenset({"qq_official", "qq_official_webhook"})
-
-# 适配器拿不到真实 self_id 时填的占位值（见 qqofficial_platform_adapter.py）：
-# 群无 mention 时 self_id="qq_official"；私聊 C2C 时 self_id="unknown_selfid"。
 PLACEHOLDER_SELF_IDS = frozenset({"qq_official", "unknown_selfid", ""})
-
-# QQ 官方被动回复的保守条数。平台常见上限为 5 条；插件默认只发 4 条，
-# 给表情/失败通知等留一条余量。
 QQ_OFFICIAL_PASSIVE_REPLY_LIMIT = 4
-
-# 单条纯文本的保守上限（可按配置覆盖）；QQ 官方在超长时可能直接拒绝。
 QQ_OFFICIAL_TEXT_LIMIT = 2000
 
-# 这些能力在 QQ 官方机器人 API 上没有对应事件/接口，配置页与日志需要明说。
 QQ_OFFICIAL_UNSUPPORTED_FEATURES = frozenset(
     {
         "poke",
@@ -55,12 +26,10 @@ QQ_OFFICIAL_UNSUPPORTED_FEATURES = frozenset(
     }
 )
 
-# botpy 能够作为 event.send 消息源的入站对象类型名。
 QQ_OFFICIAL_RAW_MESSAGE_TYPES = frozenset(
     {"Message", "GroupMessage", "DirectMessage", "C2CMessage"}
 )
 
-# 出站链里这些组件在 QQ 官方无法表达（适配器静默丢弃或序列化失败）。
 _UNSUPPORTED_COMPONENT_TYPES = frozenset(
     {
         "AtAll",
@@ -78,8 +47,6 @@ _UNSUPPORTED_COMPONENT_TYPES = frozenset(
 )
 _FORWARD_COMPONENT_TYPES = frozenset({"Node", "Nodes"})
 
-# 正文里残留的 @ 标记：其他用户/其他机器人的 <qqbot-at-user id="..." /> 或
-# <@!id> 会原样留在 message_str 里（适配器只剥除对机器人自身的 @）。
 _AT_MARKUP_RE = re.compile(
     r"<(?:qqbot-at-user\b[^>]*|@!?[^\s>]+)>",
     re.IGNORECASE,
@@ -92,14 +59,30 @@ _PLATFORM_CAPABILITY_NOTE = (
     "引用只认平台 REFIDX，转发/表情/JSON 等组件会被清理或转成文本。"
 )
 
+_OUTBOUND_ACK_CAPTURE: contextvars.ContextVar[tuple[str, list[str]] | None] = (
+    contextvars.ContextVar("nuoxiaomiao_qq_outbound_ack", default=None)
+)
+
+
+@contextlib.contextmanager
+def capture_outbound_ack(target_id: str, captured: list[str]):
+    """Scoped task-isolated capture for outbound remember_session_message_id calls."""
+    token = _OUTBOUND_ACK_CAPTURE.set((str(target_id or ""), captured))
+    try:
+        yield
+    finally:
+        _OUTBOUND_ACK_CAPTURE.reset(token)
+
+
+def current_outbound_ack_capture() -> tuple[str, list[str]] | None:
+    return _OUTBOUND_ACK_CAPTURE.get()
+
 
 def is_qq_official_platform_name(name: str | None) -> bool:
-    """平台适配器名是不是 QQ 官方（如 event.get_platform_name() 的值）。"""
     return str(name or "") in QQ_OFFICIAL_PLATFORM_NAMES
 
 
 def is_qq_official(event: Any) -> bool:
-    """事件是否来自 QQ 官方平台。"""
     try:
         return is_qq_official_platform_name(event.get_platform_name())
     except Exception:
@@ -107,10 +90,6 @@ def is_qq_official(event: Any) -> bool:
 
 
 def platform_meta(inst: Any) -> Any:
-    """取平台实例的 meta 信息，兼容两种写法。
-
-    AstrBot 真实实现是 meta() 方法；测试桩/旧代码里有直接把 meta 当属性挂的。
-    """
     meta = getattr(inst, "meta", None)
     if callable(meta):
         try:
@@ -121,22 +100,14 @@ def platform_meta(inst: Any) -> Any:
 
 
 def platform_name_of_inst(inst: Any) -> str:
-    """平台实例的适配器名（如 qq_official / aiocqhttp）。"""
     return str(getattr(platform_meta(inst), "name", "") or "")
 
 
 def platform_id_of_inst(inst: Any) -> str:
-    """平台实例的配置 id（如「糯小喵-agent专用」）。"""
     return str(getattr(platform_meta(inst), "id", "") or "")
 
 
 def platform_id_to_name(platform_id: str | None, platform_insts: Any) -> str:
-    """把平台实例的配置 id（如「糯小喵-agent专用」）反查成适配器名。
-
-    event.get_platform_id() 返回的是 cmd_config 里配置的 id，而判断平台能力
-    需要的是适配器 meta().name（如 "qq_official"）。platform_insts 通常是
-    context.platform_manager.platform_insts。
-    """
     pid = str(platform_id or "")
     if not pid:
         return ""
@@ -147,17 +118,10 @@ def platform_id_to_name(platform_id: str | None, platform_insts: Any) -> str:
 
 
 def is_qq_official_platform_id(platform_id: str | None, platform_insts: Any) -> bool:
-    """按平台实例配置 id 判断是不是 QQ 官方平台。"""
     return is_qq_official_platform_name(platform_id_to_name(platform_id, platform_insts))
 
 
 def _raw_message_type_names(raw: Any) -> set[str]:
-    """原始消息对象的类名及其 MRO 类名。
-
-    AstrBot 适配器用 PatchedGroupMessage / PatchedC2CMessage 等子类接收消息，
-    type(raw).__name__ 是 "PatchedGroupMessage" 而不是 botpy 的 "GroupMessage"；
-    只看类名会把所有真实 QQ 官方的消息源误判为不支持。
-    """
     if raw is None:
         return set()
     try:
@@ -167,26 +131,12 @@ def _raw_message_type_names(raw: Any) -> set[str]:
 
 
 def is_supported_raw_message(raw: Any) -> bool:
-    """event.send 是否能处理这个 botpy 入站对象。
-
-    QQOfficialMessageEvent._post_send_one 只接受 botpy 的 Message/GroupMessage/
-    DirectMessage/C2CMessage；其它类型（含 None）会直接 return None，既不抛错
-    也不发送。插件必须在调用前自行拦截，避免把静默丢弃当成成功。
-
-    用 MRO 判断，兼容适配器的 Patched* 子类与测试桩。
-    """
     return bool(_raw_message_type_names(raw) & QQ_OFFICIAL_RAW_MESSAGE_TYPES)
 
 
 def scene_of_event(event: Any) -> str:
-    """事件场景：group / channel / c2c / guild_dm / unknown。
-
-    QQ 官方适配器把频道消息也伪装成 GROUP_MESSAGE，所以不能用 message type
-    判断，只能看 botpy 原始对象类型；用 MRO 兼容 Patched* 子类。
-    """
     raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
     names = _raw_message_type_names(raw)
-    # 先判具体类型：DirectMessage/C2CMessage 可能继承 Message，顺序不能反。
     if "GroupMessage" in names:
         return "group"
     if "C2CMessage" in names:
@@ -205,17 +155,22 @@ def scene_of_event(event: Any) -> str:
     return "unknown"
 
 
+def _clone_with_attrs(comp: Any, **updates: Any) -> Any:
+    cloned = copy.copy(comp)
+    for attr, value in updates.items():
+        try:
+            setattr(cloned, attr, value)
+        except Exception:
+            pass
+    return cloned
+
+
 def normalize_inbound_components(
     components: list[Any],
     event: Any = None,
     strip_markup: bool = True,
 ) -> tuple[list[Any], int]:
-    """清理入站消息链：去掉 QQ 官方占位 At 和正文里的原始 @ 标记。
-
-    返回 (新组件列表, 丢弃的组件数)。只应作用于 QQ 官方事件；其它平台调用方
-    自己判断。真实 openid 的 At（群里 @ 机器人）保留，否则 WakingCheck 与插件
-    的唤醒判断会失效。
-    """
+    """清理入站消息链：不原位修改输入对象，返回浅拷贝后的新列表。"""
     cleaned: list[Any] = []
     dropped = 0
     for comp in components or []:
@@ -235,42 +190,61 @@ def normalize_inbound_components(
                 text = str(getattr(comp, "text", "") or "")
                 cleaned_text = strip_at_markup(text)
                 if cleaned_text != text:
-                    try:
-                        comp.text = cleaned_text
-                    except Exception:
-                        pass
+                    cleaned.append(_clone_with_attrs(comp, text=cleaned_text))
+                    continue
             cleaned.append(comp)
             continue
         if cname == "Reply":
             if strip_markup:
+                updates: dict[str, Any] = {}
                 for attr in ("message_str", "text"):
                     value = getattr(comp, attr, None)
                     if isinstance(value, str):
-                        try:
-                            setattr(comp, attr, strip_at_markup(value))
-                        except Exception:
-                            pass
+                        stripped = strip_at_markup(value)
+                        if stripped != value:
+                            updates[attr] = stripped
+                rchain = getattr(comp, "chain", None)
+                if isinstance(rchain, list) and rchain:
+                    new_rchain, _ = normalize_inbound_components(rchain, event=event, strip_markup=True)
+                    updates["chain"] = new_rchain
+                if updates:
+                    cleaned.append(_clone_with_attrs(comp, **updates))
+                    continue
             cleaned.append(comp)
             continue
         cleaned.append(comp)
     return cleaned, dropped
 
 
-def _expand_forward_components(components: list[Any], info: dict[str, Any]) -> list[Any]:
-    """把 Node/Nodes 递归展开成顶层组件，避免适配器静默忽略整段转发。"""
+def _expand_forward_components(
+    components: list[Any],
+    info: dict[str, Any],
+    *,
+    _depth: int = 0,
+    _seen: set[int] | None = None,
+) -> list[Any]:
+    """把 Node/Nodes 递归展开成顶层组件，带深度与循环引用保护。"""
+    if _depth > 8:
+        return list(components or [])
+    seen = _seen if _seen is not None else set()
     expanded: list[Any] = []
     for comp in components or []:
         cname = type(comp).__name__
         if cname not in _FORWARD_COMPONENT_TYPES:
             expanded.append(comp)
             continue
+        cid = id(comp)
+        if cid in seen:
+            continue
+        seen.add(cid)
         info["flattened"] = int(info.get("flattened") or 0) + 1
-        if cname == "Node":
-            nested = getattr(comp, "content", None)
-        else:
-            nested = getattr(comp, "nodes", None)
-        if nested:
-            expanded.extend(_expand_forward_components(list(nested), info))
+        nested = getattr(comp, "content", None) if cname == "Node" else getattr(comp, "nodes", None)
+        if nested is not None and not isinstance(nested, (str, bytes)):
+            items = list(nested) if isinstance(nested, (list, tuple, set)) else [nested]
+            if items:
+                expanded.extend(
+                    _expand_forward_components(items, info, _depth=_depth + 1, _seen=seen)
+                )
     return expanded
 
 
@@ -283,15 +257,7 @@ def normalize_outbound_components(
     inbound_message_id: str = "",
     strip_markup: bool = True,
 ) -> tuple[list[Any], dict[str, Any]]:
-    """把出站链清洗成 QQ 官方能表达的最小集合。
-
-    - 展开 Node/Nodes（可关）；
-    - 丢弃占位/数字 At、AtAll、Poke/Face/Json 等适配器不认识的组件；
-    - Reply 只保留 REFIDX_ 或本条入站消息 id，避免适配器回退成"引用当前消息"；
-    - 返回 dropped 统计供调用方记日志。
-
-    合法 openid At 保留：适配器会序列化成 <qqbot-at-user>，这是上游既有行为。
-    """
+    """把出站链清洗成 QQ 官方能表达的最小集合（不原位修改输入对象）。"""
     info: dict[str, Any] = {
         "dropped": 0,
         "flattened": 0,
@@ -304,9 +270,7 @@ def normalize_outbound_components(
 
     inbound = str(inbound_message_id or "")
     if not inbound and event is not None:
-        inbound = str(
-            getattr(getattr(event, "message_obj", None), "message_id", "") or ""
-        )
+        inbound = str(getattr(getattr(event, "message_obj", None), "message_id", "") or "")
 
     cleaned: list[Any] = []
     for comp in source:
@@ -325,9 +289,7 @@ def normalize_outbound_components(
             continue
         if cname == "Reply":
             reply_id = str(getattr(comp, "id", "") or "").strip()
-            keep = bool(reply_id.startswith("REFIDX_")) or (
-                bool(inbound) and reply_id == inbound
-            )
+            keep = bool(reply_id.startswith("REFIDX_")) or (bool(inbound) and reply_id == inbound)
             if not keep:
                 info["dropped"] += 1
                 info["dropped_types"][cname] = info["dropped_types"].get(cname, 0) + 1
@@ -338,33 +300,22 @@ def normalize_outbound_components(
             text = str(getattr(comp, "text", "") or "")
             cleaned_text = strip_at_markup(text)
             if cleaned_text != text:
-                try:
-                    comp.text = cleaned_text
-                except Exception:
-                    pass
+                cleaned.append(_clone_with_attrs(comp, text=cleaned_text))
+                continue
         cleaned.append(comp)
     return cleaned, info
 
 
 def sanitize_outbound_components(components: list[Any], event: Any) -> list[Any]:
-    """清洗要发给 QQ 官方的组件链（向后兼容入口）。
-
-    仅对 QQ 官方生效（其它平台原样返回）：
-    - 丢弃占位 At（qq 为 "qq_official"/"unknown_selfid"/""）——序列化会变成
-      <qqbot-at-user id="qq_official" /> 这类非法标记；
-    - 丢弃纯数字 At（QQ 号无法在 QQ 官方渲染，只能发 openid）；
-    - 丢弃 AtAll 与适配器无法表达的组件。
-    """
+    """向后兼容的轻清洗入口：对 QQ 官方剔除占位/数字/all At 与 AtAll。"""
     if not is_qq_official(event):
         return list(components)
-    # 兼容入口保持旧语义：只处理 At/AtAll，不碰 Reply/Forward 等组件；
-    # 完整清洗由 normalize_outbound_components 在统一发送管线上完成。
     cleaned: list[Any] = []
     for comp in components or []:
         cname = type(comp).__name__
         if cname == "At":
             qq = str(getattr(comp, "qq", "") or "")
-            if qq in PLACEHOLDER_SELF_IDS or qq.isdigit():
+            if qq in PLACEHOLDER_SELF_IDS or qq == "all" or qq.isdigit():
                 continue
             cleaned.append(comp)
             continue
@@ -375,12 +326,6 @@ def sanitize_outbound_components(components: list[Any], event: Any) -> list[Any]
 
 
 def is_mergeable_at(comp: Any, event: Any) -> bool:
-    """这条 At 算不算"没有实质内容、可被安全合并"（用于防抖的放行判断）。
-
-    QQ 官方私聊入站恒带 At(qq="qq_official") 占位、群无 mention 时 self_id
-    也是 "qq_official"，这些都不代表用户在 @ 谁，合并时不应当作可合并内容。
-    仅对 QQ 官方平台生效，其它平台保持原有语义（At.qq == self_id 才无内容）。
-    """
     if type(comp).__name__ != "At":
         return False
     qq = str(getattr(comp, "qq", "") or "")
@@ -396,14 +341,6 @@ def is_mergeable_at(comp: Any, event: Any) -> bool:
 
 
 def apply_content_mode(chain: Any, enabled: bool) -> None:
-    """强制消息链走普通文本（不使用 markdown）。
-
-    QQ 官方 event.send 在 use_markdown_ 为 None 时默认发 markdown（msg_type=2），
-    群里没有 markdown 权限时会先被平台拒绝、再由适配器去掉 msg_id 重试（变成
-    主动消息）。插件侧统一声明纯文本可以完全绕开这段失败舞蹈。
-
-    enabled=False 时恢复 None（跟随平台默认），不反向强制 markdown。
-    """
     if chain is None:
         return
     try:
@@ -413,11 +350,6 @@ def apply_content_mode(chain: Any, enabled: bool) -> None:
 
 
 def split_text_for_limit(text: Any, limit: int) -> list[str]:
-    """把长文本按 limit 切成保序、不丢字的多段。
-
-    优先在换行/中文标点后断开，其次空格，最后硬切；不会为了美观删掉字符。
-    limit <= 0 时不切分。
-    """
     value = str(text or "")
     if not value:
         return []
@@ -453,8 +385,114 @@ def split_text_for_limit(text: Any, limit: int) -> list[str]:
     return parts
 
 
+def prepare_outbound_chains(
+    message: Any,
+    *,
+    event: Any = None,
+    content_mode: bool = True,
+    flatten_forward: bool = True,
+    inbound_message_id: str = "",
+    strip_markup: bool = True,
+    text_limit: int = QQ_OFFICIAL_TEXT_LIMIT,
+    derive_fn: Callable[[Any, list[Any]], Any] | None = None,
+    plain_cls: Any = None,
+    chain_cls: Any = None,
+) -> tuple[list[Any], dict[str, Any]]:
+    """统一 QQ 官方出站清洗、保序分段与纯文本模式装配。"""
+    chain = list(getattr(message, "chain", None) or [])
+    if not chain:
+        return [], {"dropped": 0, "flattened": 0, "dropped_types": {}}
+    cleaned, info = normalize_outbound_components(
+        chain,
+        event=event,
+        content_mode=content_mode,
+        flatten_forward=flatten_forward,
+        inbound_message_id=inbound_message_id,
+        strip_markup=strip_markup,
+    )
+    if not cleaned:
+        return [], info
+
+    if plain_cls is None:
+        from astrbot.core.message.components import Plain as _Plain
+
+        plain_cls = _Plain
+    if chain_cls is None:
+        from astrbot.core.message.message_event_result import MessageChain as _MessageChain
+
+        chain_cls = _MessageChain
+
+    def _make_chain(comps: list[Any]) -> Any:
+        if derive_fn is not None:
+            item = derive_fn(message, comps)
+        else:
+            derive = getattr(message, "derive", None)
+            if callable(derive):
+                try:
+                    item = derive(list(comps))
+                except Exception:
+                    item = chain_cls(list(comps))
+            else:
+                item = chain_cls(list(comps))
+        if content_mode:
+            apply_content_mode(item, True)
+        return item
+
+    # Merge adjacent Plain components in place while keeping non-Plain positions intact.
+    coalesced: list[Any] = []
+    for comp in cleaned:
+        if type(comp).__name__ == "Plain":
+            txt = str(getattr(comp, "text", "") or "")
+            if coalesced and type(coalesced[-1]).__name__ == "Plain":
+                prev_txt = str(getattr(coalesced[-1], "text", "") or "")
+                coalesced[-1] = plain_cls(prev_txt + txt)
+            else:
+                coalesced.append(plain_cls(txt))
+        else:
+            coalesced.append(comp)
+
+    limit = int(text_limit or 0)
+    # Split oversized Plain components while keeping At/Media relative order.
+    segments: list[list[Any]] = [[]]
+    current_len = 0
+    for comp in coalesced:
+        if type(comp).__name__ != "Plain":
+            segments[-1].append(comp)
+            continue
+        txt = str(getattr(comp, "text", "") or "")
+        if not txt.strip():
+            continue
+        if limit <= 0 or (current_len + len(txt) <= limit):
+            segments[-1].append(plain_cls(txt))
+            current_len += len(txt)
+            continue
+        chunks = split_text_for_limit(txt, limit)
+        for idx, chunk in enumerate(chunks):
+            if not chunk:
+                continue
+            if idx == 0 and current_len == 0:
+                segments[-1].append(plain_cls(chunk))
+                current_len += len(chunk)
+            elif idx == 0 and current_len + len(chunk) <= limit:
+                segments[-1].append(plain_cls(chunk))
+                current_len += len(chunk)
+            else:
+                segments.append([plain_cls(chunk)])
+                current_len = len(chunk)
+
+    chains: list[Any] = []
+    for seg in segments:
+        filtered = [
+            comp
+            for comp in seg
+            if not (type(comp).__name__ == "Plain" and not str(getattr(comp, "text", "") or "").strip())
+        ]
+        if filtered:
+            chains.append(_make_chain(filtered))
+    return chains, info
+
+
 def session_last_message_id(platform_inst: Any, session_id: str | None) -> str:
-    """读适配器缓存的最近消息 id（send_by_session 成功后会更新）。"""
     sid = str(session_id or "")
     if not sid:
         return ""
@@ -468,7 +506,6 @@ def session_last_message_id(platform_inst: Any, session_id: str | None) -> str:
 
 
 def delivery_ack(platform_inst: Any, session_id: str | None) -> str:
-    """主动投递后的轻量确认依据：最近消息 id。"""
     return session_last_message_id(platform_inst, session_id)
 
 
@@ -490,12 +527,6 @@ def group_send_state(
     group_id: str | None,
     allow_channel: bool = True,
 ) -> tuple[bool, str, str]:
-    """预检 QQ 官方群/频道主动消息是否具备投递条件。
-
-    返回 (ready, scene, reason)。群主动消息在适配器里只有当 _session_scene
-    记成 "group" 时才会走群 API；频道则要求 _session_last_message_id 非空
-    （_send_by_session_common 的频道分支无 msg_id 会跳过）。
-    """
     gid = str(group_id or "").strip()
     if not gid:
         return False, "", "缺少群标识（group_openid）"
@@ -516,10 +547,7 @@ def group_send_state(
 def qq_official_group_send_ready(
     platform_inst: Any, group_id: str | None
 ) -> tuple[bool, str]:
-    """预检 QQ 官方群聊主动消息是否具备投递条件（旧签名，群场景专用）。"""
-    ready, _scene, reason = group_send_state(
-        platform_inst, group_id, allow_channel=False
-    )
+    ready, _scene, reason = group_send_state(platform_inst, group_id, allow_channel=False)
     return ready, reason
 
 
@@ -530,7 +558,6 @@ def delivery_ready(
     *,
     allow_group: bool = False,
 ) -> tuple[bool, str]:
-    """主动消息投递前的平台能力预检（群/频道/私聊）。"""
     if platform_inst is None:
         return False, "找不到平台适配器实例"
     cid = str(conversation_id or "").strip()
@@ -543,9 +570,7 @@ def delivery_ready(
         return False, "不支持的主动消息目标类型"
     if not allow_group:
         return False, "QQ 官方群聊主动消息未开启（qq_official_group_proactive）"
-    ready, _scene, reason = group_send_state(
-        platform_inst, cid, allow_channel=True
-    )
+    ready, _scene, reason = group_send_state(platform_inst, cid, allow_channel=True)
     return ready, reason
 
 
@@ -561,11 +586,6 @@ _PERMISSION_ERROR_MARKERS = (
 
 
 def is_permission_error(exc: BaseException) -> bool:
-    """QQ 平台是不是明确拒绝了这次发送（权限/配额/白名单）。
-
-    这类错误是确定失败，不能当 unknown 让模型以为“可能已经发出去了”；
-    unknown 只留给网络超时、API 返回 None 等真正不确定的情况。
-    """
     try:
         text = str(exc or "").lower()
     except Exception:
@@ -583,16 +603,12 @@ def is_permission_error(exc: BaseException) -> bool:
             "PermissionError",
             "MethodNotAllowedError",
             "UnauthorizedError",
+            "AuthenticationFailedError",
         }
     )
 
 
 def at_id_deliverable(platform_name: str | None, at_id: Any) -> bool:
-    """这个 @ 目标 id 在目标平台上能不能直接发。
-
-    QQ 官方只认 openid（非纯数字、长度与格式由平台决定）；纯数字 QQ 号发出去
-    只会变成非法标记。其它平台一律放行（保持旧行为）。
-    """
     if not is_qq_official_platform_name(platform_name):
         return True
     value = str(at_id or "").strip()
@@ -602,7 +618,6 @@ def at_id_deliverable(platform_name: str | None, at_id: Any) -> bool:
 
 
 def strip_at_markup(text: Any) -> str:
-    """清掉正文里残留的 @ 标记（<qqbot-at-user .../>、<@!id>）。"""
     if not text:
         return ""
     cleaned = _AT_MARKUP_RE.sub("", str(text))
@@ -610,7 +625,6 @@ def strip_at_markup(text: Any) -> str:
 
 
 def clean_platform_text(event: Any, text: Any, enabled: bool = True) -> str:
-    """按平台规则清理要进入速览库 / LLM 的正文文本。"""
     value = str(text or "").strip()
     if enabled and is_qq_official(event):
         return strip_at_markup(value)
@@ -618,7 +632,6 @@ def clean_platform_text(event: Any, text: Any, enabled: bool = True) -> str:
 
 
 def display_name_fallback(value: Any, kind: str = "group") -> str:
-    """openid 没有昵称时给用户看的短标签（不写回真实名称字段）。"""
     text = str(value or "").strip()
     if not text:
         return "未知会话"
@@ -628,5 +641,4 @@ def display_name_fallback(value: Any, kind: str = "group") -> str:
 
 
 def platform_capability_note() -> str:
-    """平台边界文案：日志、能力提醒、README 共用。"""
     return _PLATFORM_CAPABILITY_NOTE
