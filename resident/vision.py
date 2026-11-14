@@ -22,6 +22,8 @@ from .autonomy import CURRENT_RUN
 
 # 单张图片描述失败后重试次数（不含超时吞掉的那次）。
 VISION_ATTEMPTS_PER_PROVIDER = 2
+# 同一原因的告警最小间隔：模型不可用可能持续很久，别把日志刷满。
+VISION_WARNING_INTERVAL_SECONDS = 300.0
 # 默认提示词：仅在 AstrBot 核心没有配置 image_caption_prompt 时使用。
 VISION_DEFAULT_CAPTION_PROMPT = (
     "请用中文仔细描述这张图片的内容，包括主要物体、人物动作、场景与"
@@ -36,6 +38,16 @@ class Vision:
         self.service = service
         self.plugin = service.plugin
         self.store = service.store
+        # 告警限频：告警键 -> 最近一次告警时刻。
+        self._warned_at: dict[str, float] = {}
+
+    def _warn_throttled(self, key: str, message: str, *args) -> None:
+        """同一原因限频告警：识图失败要看得见，但别把日志刷满。"""
+        now = time.time()
+        if now - self._warned_at.get(key, 0.0) < VISION_WARNING_INTERVAL_SECONDS:
+            return
+        self._warned_at[key] = now
+        logger.warning(message, *args)
 
     # ------------------------------------------------------------------
     # 留底目录与图片定位
@@ -217,16 +229,68 @@ class Vision:
         ).strip()
         return prompt or VISION_DEFAULT_CAPTION_PROMPT
 
+    async def _provider_by_id(self, manager, provider_id: str):
+        """按 ID 取模型；取不到返回 None（异常只记一条限频告警）。"""
+        get_by_id = getattr(manager, "get_provider_by_id", None)
+        if not callable(get_by_id):
+            return None
+        try:
+            return await get_by_id(provider_id)
+        except Exception as exc:
+            self._warn_throttled(
+                f"vision-provider-err:{provider_id}",
+                "[糯小喵] 识图模型 %s 获取异常: %s",
+                provider_id,
+                exc,
+            )
+            return None
+
+    async def _session_default_provider(self, manager, umo: str):
+        """会话默认模型：优先核心异步接口，旧核心退回同步接口。"""
+        try:
+            from astrbot.core.provider.entities import ProviderType
+        except Exception:
+            return None
+        get_async = getattr(manager, "get_using_provider_async", None)
+        if callable(get_async):
+            try:
+                # 核心签名是 get_using_provider_async(provider_type, umo=None)，
+                # provider_type 必填；漏传会抛 TypeError 被吞成「没有模型」。
+                return await get_async(ProviderType.CHAT_COMPLETION, umo=umo or None)
+            except TypeError:
+                # 早期核心不接受 umo 关键字：退化为只传类型。
+                try:
+                    return await get_async(ProviderType.CHAT_COMPLETION)
+                except Exception as exc:
+                    self._warn_throttled(
+                        "vision-default-provider",
+                        "[糯小喵] 识图回退默认模型失败: %s",
+                        exc,
+                    )
+                    return None
+            except Exception as exc:
+                self._warn_throttled(
+                    "vision-default-provider", "[糯小喵] 识图回退默认模型失败: %s", exc
+                )
+                return None
+        get_sync = getattr(manager, "get_using_provider", None)
+        if not callable(get_sync):
+            return None
+        try:
+            return get_sync(ProviderType.CHAT_COMPLETION)
+        except Exception as exc:
+            self._warn_throttled(
+                "vision-default-provider", "[糯小喵] 识图回退默认模型失败: %s", exc
+            )
+            return None
+
     async def resolve_provider(self, umo: str = ""):
         """按链解析识图模型：插件指定链 → 核心默认识图模型 → 会话默认模型。"""
         manager = getattr(self.plugin.context, "provider_manager", None)
         if manager is None:
             return None
         for provider_id in self.plugin.vision_provider_ids:
-            try:
-                provider = await manager.get_provider_by_id(provider_id)
-            except Exception:
-                provider = None
+            provider = await self._provider_by_id(manager, provider_id)
             if provider is not None and callable(getattr(provider, "text_chat", None)):
                 return provider
         core_default = str(
@@ -234,22 +298,10 @@ class Vision:
             or ""
         ).strip()
         if core_default:
-            try:
-                provider = await manager.get_provider_by_id(core_default)
-            except Exception:
-                provider = None
+            provider = await self._provider_by_id(manager, core_default)
             if provider is not None and callable(getattr(provider, "text_chat", None)):
                 return provider
-        try:
-            get_async = getattr(manager, "get_using_provider_async", None)
-            if callable(get_async):
-                provider = await get_async(umo=umo or None)
-            else:
-                from astrbot.core.provider.entities import ProviderType
-
-                provider = manager.get_using_provider(ProviderType.CHAT_COMPLETION)
-        except Exception:
-            provider = None
+        provider = await self._session_default_provider(manager, umo)
         if provider is not None and callable(getattr(provider, "text_chat", None)):
             return provider
         return None
@@ -260,6 +312,11 @@ class Vision:
         """对单张图片跑一次识图模型；失败或超时返回空串。"""
         provider = await self.resolve_provider(umo)
         if provider is None:
+            self._warn_throttled(
+                f"vision-no-provider:{umo or '-'}",
+                "[糯小喵] 识图跳过：没有可用模型（会话 %s）",
+                umo or "-",
+            )
             return ""
         # 自主运行进行中时，识图调用同样计入本轮 token 预算（审查 H12）。
         if CURRENT_RUN.get() is not None:
@@ -285,10 +342,19 @@ class Vision:
                 if text:
                     return text
             except asyncio.TimeoutError:
-                logger.debug("[糯小喵] 识图超时")
+                self._warn_throttled(
+                    f"vision-timeout:{umo or '-'}",
+                    "[糯小喵] 识图超时（会话 %s）",
+                    umo or "-",
+                )
                 return ""
             except Exception as exc:
-                logger.debug("[糯小喵] 识图调用失败: %s", exc)
+                self._warn_throttled(
+                    f"vision-call:{umo or '-'}",
+                    "[糯小喵] 识图调用失败（会话 %s）: %s",
+                    umo or "-",
+                    exc,
+                )
         return ""
 
     async def read_image(

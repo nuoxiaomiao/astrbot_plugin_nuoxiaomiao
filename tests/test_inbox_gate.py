@@ -138,18 +138,25 @@ class InboxGateTest(unittest.IsolatedAsyncioTestCase):
         for i in range(6):
             self.record(p, f"内容{i}", mentioned=i == 3)
         persona = "@session:aiocqhttp:GroupMessage:20001"
-        text = await p.resident.inbox.notice(FakeEvent(is_trigger=False), persona)
+        text, shown_ids = await p.resident.inbox.notice(
+            FakeEvent(is_trigger=False), persona
+        )
         self.assertIn("未读 6 条", text)
-        self.assertIn("近期话题：大家在聊周末去哪", text)
+        self.assertIn("近期话题：大家在聊周末去哪。", text)
         self.assertIn("（@你）", text)
+        # 返回实际展示的 id：调用方只标这些已读，不能整频道清空。
+        self.assertEqual(len(shown_ids), 6)
 
     async def test_notice_respects_limit(self):
         p = self.make(resident_inbox_enabled=True, mention_notice_limit=2)
         for i in range(10):
             self.record(p, f"内容{i}")
         persona = "@session:aiocqhttp:GroupMessage:20001"
-        text = await p.resident.inbox.notice(FakeEvent(is_trigger=False), persona, limit=2)
+        text, shown_ids = await p.resident.inbox.notice(
+            FakeEvent(is_trigger=False), persona, limit=2
+        )
         self.assertEqual(text.count("- "), 2)
+        self.assertEqual(len(shown_ids), 2)
 
     async def test_read_injects_topic_for_single_session(self):
         p = self.make(resident_inbox_enabled=True, topic_summary_enabled=True)
@@ -190,7 +197,6 @@ class InboxGateTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_image_only_message_captured_when_vision_enabled(self):
         import tempfile
-        from pathlib import Path
 
         with tempfile.TemporaryDirectory() as tmp:
             img = image_file(tmp)

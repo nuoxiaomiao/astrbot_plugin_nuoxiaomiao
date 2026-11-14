@@ -1,10 +1,10 @@
 """QQ 官方机器人（qq_official / qq_official_webhook）平台适配测试。
 
 覆盖两层：
-- qq_official.py 的纯函数（平台判定、出站清洗、@ 可合并性、气泡规划、
+- qq_official.py 的纯函数（平台判定、出站清洗、@ 可合并性、
   @ 目标可投递性、群主动消息预检、正文 @ 标记清理）；
 - main.py 里 QQ 官方的适配分支（合成消息透传原始消息对象与入站 msg_id、
-  拟人回复气泡压缩 + 纯文本、@ 目标解析、群主动消息门禁、正文清理、新配置项）。
+  纯文本标记、@ 目标解析、群主动消息门禁、正文清理、新配置项）。
 
 复用 test_plugin_logic.py 的 FakeEvent / FakeContext / make_plugin，只补
 QQ 官方平台需要的那点差异（平台名、平台实例的 meta()、raw_message）。
@@ -15,11 +15,18 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from astrbot.core.message.components import At, AtAll, Image, Plain, Reply
+from astrbot.core.message.components import At, AtAll, Face, Image, Node, Nodes, Plain, Reply
+from astrbot.core.message.message_event_result import MessageChain
 
 import qq_official
-from main import ActivityEntry, HumanReplyState, MergeSession
-from test_plugin_logic import FakeContext, FakeEvent, FakeProvider, make_plugin
+from main import ActivityEntry, MergeSession
+from test_plugin_logic import (
+    FakeContext,
+    FakeEvent,
+    FakeProvider,
+    fetch_activity_rows,
+    make_plugin,
+)
 
 QQ_OPENID = "66DEB259637EEB4BCD616C41F7154987"
 OTHER_OPENID = "0F1E2D3C4B5A69788796A5B4C3D2E1F0"
@@ -175,32 +182,6 @@ class QQOfficialMergeableAtTest(unittest.TestCase):
         self.assertTrue(qq_official.is_mergeable_at(At(qq="bot"), event))
         self.assertFalse(qq_official.is_mergeable_at(At(qq="qq_official"), event))
         self.assertFalse(qq_official.is_mergeable_at(At(qq="123456"), event))
-
-
-class QQOfficialPlanBubblesTest(unittest.TestCase):
-    """qq_official.plan_bubbles：拟人回复分条压缩。"""
-
-    def test_under_limit_is_returned_as_is(self):
-        """没超上限时原样返回。"""
-        segments = ["一", "二", "三"]
-        self.assertEqual(qq_official.plan_bubbles(segments, 4), segments)
-        self.assertEqual(qq_official.plan_bubbles(segments, 3), segments)
-
-    def test_over_limit_merges_tail_into_last_bubble(self):
-        """超上限时把多出来的段落按顺序合并进最后一条。"""
-        merged = qq_official.plan_bubbles(["一", "二", "三", "四"], 2)
-        self.assertEqual(merged, ["一", "二\n三\n四"])
-        self.assertEqual(
-            qq_official.plan_bubbles(["一", "二", "三", "四"], 2, " / "),
-            ["一", "二 / 三 / 四"],
-        )
-
-    def test_zero_means_unlimited(self):
-        """max_bubbles=0 表示不限制。"""
-        segments = ["一", "二", "三", "四"]
-        self.assertEqual(qq_official.plan_bubbles(segments, 0), segments)
-        self.assertEqual(qq_official.plan_bubbles(segments, -1), segments)
-        self.assertEqual(qq_official.plan_bubbles([], 2), [])
 
 
 class QQOfficialAtIdDeliverableTest(unittest.TestCase):
@@ -368,43 +349,6 @@ class QQOfficialMergedEventTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created[0]["message_id"], "")
 
 
-class QQOfficialHumanReplyTest(unittest.IsolatedAsyncioTestCase):
-    """main._run_human_reply：QQ 官方气泡压缩与纯文本模式。"""
-
-    async def test_caps_bubbles_and_uses_plain_text(self):
-        """4 段文本压到 2 条气泡，最后一条含合并内容，且消息链不走 markdown。"""
-        plugin = make_plugin(
-            qq_official_max_bubbles=2,
-            qq_official_passive_window_seconds=1,
-        )
-        self.addAsyncCleanup(plugin.terminate)
-        # 打字等待对本用例没有意义，打桩成 0 让用例瞬间跑完。
-        plugin._human_reply_delay = lambda segment: 0.0
-
-        event = QQOfficialFakeEvent(
-            session="qq_official:GroupMessage:G1",
-            group_id="G1",
-            message_str="",
-        )
-        segments = ["第一段", "第二段", "第三段", "第四段"]
-        state = HumanReplyState(
-            total=len(segments), umo=event.unified_msg_origin, segments=list(segments)
-        )
-
-        await plugin._run_human_reply(event, [], list(segments), "qq-key", state)
-
-        self.assertLessEqual(len(event.sent), 2)
-        self.assertEqual(len(event.sent), 2)
-        self.assertEqual(event.sent[0].get_plain_text(), "第一段")
-        last_text = event.sent[-1].get_plain_text()
-        self.assertIn("第三段", last_text)
-        self.assertIn("第四段", last_text)
-        self.assertEqual(state.total, 2)
-        self.assertEqual(state.sent_count, 2)
-        # qq_official_content_mode=True：每条链都声明纯文本（use_markdown_ 为 False）。
-        self.assertTrue(all(chain.use_markdown_ is False for chain in event.sent))
-
-
 class QQOfficialResolveAtTargetTest(unittest.IsolatedAsyncioTestCase):
     """main._resolve_at_target：QQ 官方只认 openid，纯数字 QQ 号不 @。"""
 
@@ -522,47 +466,283 @@ class QQOfficialExtractTextTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(disabled._extract_text(qq_event), AT_MARKUP_TEXT)
 
 
+class QQOfficialSendObserverTest(unittest.IsolatedAsyncioTestCase):
+    """QQ 官方出站走观察器时的守卫：静默丢弃不记已发、拆链部分成功也要补记。"""
+
+    async def test_unsupported_raw_message_is_not_sent_or_recorded(self):
+        """适配器静默丢弃的消息源（raw_message 不可发送）不能算发送成功。"""
+        plugin = make_plugin(context=make_qq_official_context())
+        self.addAsyncCleanup(plugin.terminate)
+        event = QQOfficialFakeEvent(message_str="在吗", raw_message=None)
+        plugin._ensure_send_observer(event)
+
+        delivered = await event.send(MessageChain([Plain("发不出去的回复")]))
+        await plugin.after_reply_sent(event)
+
+        self.assertFalse(delivered)
+        self.assertEqual(event.sent, [])
+        self.assertEqual(fetch_activity_rows(plugin, sender_id="bot"), [])
+
+    async def test_partial_long_text_send_records_delivered_prefix(self):
+        """超过 qq_official_text_chars 拆链后中途失败：已发气泡仍要记进速览库。"""
+        plugin = make_plugin(
+            context=make_qq_official_context(), qq_official_text_chars=10
+        )
+        self.addAsyncCleanup(plugin.terminate)
+        raw_message = type("GroupMessage", (), {})()
+        event = QQOfficialFakeEvent(
+            message_str="在吗", raw_message=raw_message, message_id="MID1"
+        )
+        attempts = []
+
+        async def flaky_send(message):
+            attempts.append(message.get_plain_text())
+            if len(attempts) == 2:
+                return False
+            event.sent.append(message)
+
+        event.send = flaky_send
+        plugin._ensure_send_observer(event)
+        delivered = await event.send(
+            MessageChain([Plain("第一句话来了。第二句话也来。")])
+        )
+        await plugin.after_reply_sent(event)
+
+        self.assertFalse(delivered)
+        self.assertEqual(attempts, ["第一句话来了。", "第二句话也来。"])
+        rows = fetch_activity_rows(plugin, sender_id="bot")
+        self.assertEqual([row[5] for row in rows], ["第一句话来了。"])
+
+
 class QQOfficialConfigTest(unittest.IsolatedAsyncioTestCase):
     """新配置项落地：_apply_config 解析 qq_official_* 与默认值。"""
 
     async def test_defaults(self):
-        """默认值：最多 4 条、窗口 240 秒、群主动关闭、清理 @ 标记开启。"""
+        """默认值：群主动关闭、清理 @ 标记开启。"""
         plugin = make_plugin()
         self.addAsyncCleanup(plugin.terminate)
 
         self.assertTrue(plugin.qq_official_enabled)
         self.assertTrue(plugin.qq_official_content_mode)
-        self.assertEqual(plugin.qq_official_max_bubbles, 4)
-        self.assertEqual(plugin.qq_official_passive_window_seconds, 240)
         self.assertFalse(plugin.qq_official_group_proactive)
         self.assertTrue(plugin.qq_official_strip_at_markup)
+        self.assertEqual(plugin.qq_official_admin_openids, set())
+        self.assertTrue(plugin.qq_official_quote_trigger)
+        self.assertEqual(plugin.qq_official_text_chars, 2000)
+        self.assertTrue(plugin.qq_official_flatten_forward)
 
     async def test_overrides_and_clamping(self):
-        """显式配置生效，越界值按运行期护栏收敛。"""
+        """显式配置生效。"""
         plugin = make_plugin(
             qq_official_enabled=False,
             qq_official_content_mode=False,
-            qq_official_max_bubbles=2,
-            qq_official_passive_window_seconds=30,
             qq_official_group_proactive=True,
             qq_official_strip_at_markup=False,
+            qq_official_admin_openids=[QQ_OPENID],
+            qq_official_quote_trigger=False,
+            qq_official_text_chars=-5,
+            qq_official_flatten_forward=False,
         )
         self.addAsyncCleanup(plugin.terminate)
 
         self.assertFalse(plugin.qq_official_enabled)
         self.assertFalse(plugin.qq_official_content_mode)
-        self.assertEqual(plugin.qq_official_max_bubbles, 2)
-        self.assertEqual(plugin.qq_official_passive_window_seconds, 30)
         self.assertTrue(plugin.qq_official_group_proactive)
         self.assertFalse(plugin.qq_official_strip_at_markup)
+        self.assertEqual(plugin.qq_official_admin_openids, {QQ_OPENID})
+        self.assertFalse(plugin.qq_official_quote_trigger)
+        self.assertEqual(plugin.qq_official_text_chars, 0)
+        self.assertFalse(plugin.qq_official_flatten_forward)
+        self.assertIn(QQ_OPENID, plugin._admin_ids())
 
-        clamped = make_plugin(
-            qq_official_max_bubbles=-3,
-            qq_official_passive_window_seconds=0,
+
+class QQOfficialHelpersAndPipelineTest(unittest.IsolatedAsyncioTestCase):
+    """覆盖 2.5.2 新增的入站归一化、出站清洗展开、场景判定与主动送达确认。"""
+
+    def test_scene_of_event_uses_mro_and_fallback(self):
+        class PatchedGroupMessage:
+            pass
+
+        class GroupMessage(PatchedGroupMessage):
+            pass
+
+        class CustomSubGroup(GroupMessage):
+            pass
+
+        class C2CMessage:
+            pass
+
+        class DirectMessage:
+            pass
+
+        class Message:
+            pass
+
+        self.assertEqual(
+            qq_official.scene_of_event(QQOfficialFakeEvent(raw_message=CustomSubGroup())),
+            "group",
         )
-        self.addAsyncCleanup(clamped.terminate)
-        self.assertEqual(clamped.qq_official_max_bubbles, 0)
-        self.assertEqual(clamped.qq_official_passive_window_seconds, 1)
+        self.assertEqual(
+            qq_official.scene_of_event(QQOfficialFakeEvent(raw_message=C2CMessage())),
+            "c2c",
+        )
+        self.assertEqual(
+            qq_official.scene_of_event(QQOfficialFakeEvent(raw_message=DirectMessage())),
+            "guild_dm",
+        )
+        self.assertEqual(
+            qq_official.scene_of_event(QQOfficialFakeEvent(raw_message=Message())),
+            "channel",
+        )
+        self.assertEqual(
+            qq_official.scene_of_event(QQOfficialFakeEvent(raw_message=None, is_private=True)),
+            "c2c",
+        )
+
+    def test_normalize_inbound_and_outbound_components(self):
+        event = QQOfficialFakeEvent(message_id="INBOUND_1")
+        inbound = [
+            At(qq="qq_official"),
+            At(qq=QQ_OPENID),
+            AtAll(),
+            Plain(AT_MARKUP_TEXT),
+        ]
+        cleaned_in, dropped = qq_official.normalize_inbound_components(inbound, event=event)
+        self.assertEqual(dropped, 2)
+        self.assertEqual([type(c).__name__ for c in cleaned_in], ["At", "Plain"])
+        self.assertEqual(cleaned_in[1].text, "你好")
+
+        outbound = [
+            At(qq="123456"),
+            Face(id=1),
+            Reply(id="OTHER_ID"),
+            Reply(id="REFIDX_abc"),
+            Nodes([Node(content=[Plain("转发正文"), Image(file="/tmp/a.png")])]),
+        ]
+        cleaned_out, info = qq_official.normalize_outbound_components(
+            outbound, event=event, flatten_forward=True
+        )
+        self.assertEqual(info["flattened"], 2)
+        self.assertEqual(info["dropped"], 3)
+        self.assertEqual(
+            [type(c).__name__ for c in cleaned_out],
+            ["Reply", "Plain", "Image"],
+        )
+        self.assertEqual(cleaned_out[0].id, "REFIDX_abc")
+
+    def test_delivery_ready_permission_error_and_split_text(self):
+        inst = SimpleNamespace(
+            _session_scene={"G1": "group", "C1": "channel"},
+            _session_last_message_id={"C1": "MID1"},
+        )
+        self.assertEqual(qq_official.delivery_ready(inst, "private", "U1"), (True, ""))
+        self.assertEqual(
+            qq_official.delivery_ready(inst, "group", "G1", allow_group=True),
+            (True, ""),
+        )
+        ready, _ = qq_official.delivery_ready(inst, "group", "C1", allow_group=True)
+        self.assertTrue(ready)
+        ready2, _ = qq_official.delivery_ready(
+            SimpleNamespace(_session_scene={"C1": "channel"}),
+            "group",
+            "C1",
+            allow_group=True,
+        )
+        self.assertFalse(ready2)
+
+        class ForbiddenError(Exception):
+            pass
+
+        self.assertTrue(qq_official.is_permission_error(ForbiddenError("blocked")))
+        self.assertTrue(qq_official.is_permission_error(RuntimeError("主动消息失败: 无权限")))
+        self.assertFalse(qq_official.is_permission_error(TimeoutError("network timeout")))
+
+        parts = qq_official.split_text_for_limit("第一句。第二句。第三句。", 8)
+        self.assertEqual("".join(parts), "第一句。第二句。第三句。")
+        self.assertTrue(all(len(p) <= 8 for p in parts))
+        self.assertEqual(qq_official.display_name_fallback("ABCDEF12345678", "group"), "群·12345678")
+
+    async def test_prepare_qq_official_event_cleans_and_wakes_on_bot_quote(self):
+        plugin = make_plugin(context=make_qq_official_context())
+        self.addAsyncCleanup(plugin.terminate)
+        plugin._record_activity(
+            ActivityEntry(
+                ts=time.time(),
+                sender_id="bot",
+                sender_name="糯小喵",
+                conversation_id="G1",
+                conversation_name="G1",
+                kind="group",
+                text="昨晚记得早点睡哦",
+                platform_id="qq_official",
+            )
+        )
+        event = QQOfficialFakeEvent(
+            group_id="G1",
+            session="qq_official:GroupMessage:G1",
+            is_trigger=False,
+            raw_message=type("GroupMessage", (), {})(),
+            components=[
+                At(qq="qq_official"),
+                Reply(id="R1", sender_id="", message_str="昨晚记得早点睡哦"),
+                Plain(AT_MARKUP_TEXT),
+            ],
+            message_str=AT_MARKUP_TEXT,
+        )
+        await plugin._prepare_qq_official_event(event)
+        self.assertEqual(event.message_str, "你好")
+        self.assertTrue(event.is_at_or_wake_command)
+        self.assertEqual(
+            [type(c).__name__ for c in event.message_obj.message],
+            ["Reply", "Plain"],
+        )
+
+        # 引用第三方发言不应触发机器人唤醒
+        third_party = QQOfficialFakeEvent(
+            group_id="G1",
+            session="qq_official:GroupMessage:G1",
+            is_trigger=False,
+            raw_message=type("GroupMessage", (), {})(),
+            components=[Reply(id="R2", sender_id="", message_str="这是别人发的无关消息")],
+            message_str="嗯嗯",
+        )
+        await plugin._prepare_qq_official_event(third_party)
+        self.assertFalse(third_party.is_at_or_wake_command)
+
+    async def test_qq_official_send_by_session_ignores_other_session_inbound_ack(self):
+        plugin = make_plugin(context=make_qq_official_context())
+        self.addAsyncCleanup(plugin.terminate)
+        remembered = []
+        inst = SimpleNamespace(
+            remember_session_message_id=lambda sid, mid: remembered.append((sid, mid))
+        )
+
+        async def send_with_concurrent_other_inbound(_umo, _chain):
+            # 模拟发送期间同进程收到别的会话消息，触发 remember_session_message_id
+            inst.remember_session_message_id("OTHER_GROUP", "INBOUND_OTHER_MID")
+            return True
+
+        plugin.context.send_message = send_with_concurrent_other_inbound
+        ok, unknown, _detail = await plugin._qq_official_send_by_session(
+            inst, "qq_official:GroupMessage:G1", MessageChain([Plain("hi")]), "G1"
+        )
+        self.assertFalse(ok)
+        self.assertTrue(unknown)
+
+        async def send_with_matching_ack(_umo, _chain):
+            inst.remember_session_message_id("G1", "SENT_MID_1")
+            return True
+
+        plugin.context.send_message = send_with_matching_ack
+        ok2, unknown2, _detail2 = await plugin._qq_official_send_by_session(
+            inst, "qq_official:GroupMessage:G1", MessageChain([Plain("hi")]), "G1"
+        )
+        self.assertTrue(ok2)
+        self.assertFalse(unknown2)
+        self.assertEqual(
+            remembered,
+            [("OTHER_GROUP", "INBOUND_OTHER_MID"), ("G1", "SENT_MID_1")],
+        )
 
 
 if __name__ == "__main__":

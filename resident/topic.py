@@ -24,6 +24,10 @@ TOPIC_ALIASES = (
     "子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥",  # 地支
     "鼠", "牛", "虎", "兔", "龙", "蛇", "马", "羊", "猴", "鸡", "狗", "猪",  # 生肖
 )
+# 失败退避：失败后这段时间内不再触发概括，避免每条未读消息都重试一次模型。
+TOPIC_FAILURE_COOLDOWN_SECONDS = 60.0
+# 同一原因的告警最小间隔：模型不可用可能持续很久，别把日志刷满。
+TOPIC_WARNING_INTERVAL_SECONDS = 300.0
 
 
 class Topic:
@@ -35,9 +39,26 @@ class Topic:
         self.store = service.store
         # 每个会话一把概括锁：避免同一会话的两条消息同时触发两轮概括。
         self._locks: dict[str, asyncio.Lock] = {}
+        # 失败退避：umo -> 最近一次失败时刻。
+        self._failed_at: dict[str, float] = {}
+        # 正在概括的会话：并发触发时只跑一轮。
+        self._in_flight: set[str] = set()
+        # 告警限频：告警键 -> 最近一次告警时刻。
+        self._warned_at: dict[str, float] = {}
 
     def _lock(self, umo: str) -> asyncio.Lock:
         return self._locks.setdefault(umo, asyncio.Lock())
+
+    def _warn_throttled(self, key: str, message: str, *args) -> None:
+        """同一原因限频告警：生产上失败要看得见，但别把日志刷满。"""
+        now = time.time()
+        if now - self._warned_at.get(key, 0.0) < TOPIC_WARNING_INTERVAL_SECONDS:
+            return
+        self._warned_at[key] = now
+        logger.warning(message, *args)
+
+    def _mark_failed(self, umo: str) -> None:
+        self._failed_at[umo] = time.time()
 
     # ------------------------------------------------------------------
     # 对外调度
@@ -48,12 +69,19 @@ class Topic:
         p = self.plugin
         if not p.topic_summary_enabled or not umo:
             return False
+        now = time.time()
+        # 上次失败先退避：否则繁忙群每条消息都会重试一次模型。
+        if self._failed_at.get(umo, 0.0) + TOPIC_FAILURE_COOLDOWN_SECONDS > now:
+            return False
+        if umo in self._in_flight:
+            return False
         state = self.store.topic_state(umo)
-        if state["topic_updated_at"] + p.topic_cooldown_seconds > time.time():
+        if state["topic_updated_at"] + p.topic_cooldown_seconds > now:
             return False
         pending = self._pending_count(umo, state["topic_to_id"])
         if pending < p.topic_min_unread:
             return False
+        self._in_flight.add(umo)
         self._spawn(umo)
         return True
 
@@ -63,13 +91,24 @@ class Topic:
         task.add_done_callback(self.plugin._resident_bg_tasks.discard)
 
     async def _run_guarded(self, umo: str) -> None:
-        async with self._lock(umo):
-            try:
+        try:
+            async with self._lock(umo):
+                # 排队等锁期间可能已有别的任务概括完：拿锁后复查冷却，避免重复跑。
+                state = self.store.topic_state(umo)
+                if (
+                    state["topic_updated_at"] + self.plugin.topic_cooldown_seconds
+                    > time.time()
+                ):
+                    return
                 await self.summarize(umo)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.debug("[糯小喵] 话题概括失败: %s", exc)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._warn_throttled(
+                f"topic-run:{umo}", "[糯小喵] 话题概括失败: umo=%s err=%s", umo, exc
+            )
+        finally:
+            self._in_flight.discard(umo)
 
     # ------------------------------------------------------------------
     # 数据查询
@@ -102,9 +141,25 @@ class Topic:
         return self.store.rows(
             "SELECT id,ts,text,sender_id,sender_name,mentioned FROM activity_messages "
             "WHERE platform_id=? AND kind=? AND conversation_id=? AND id>? "
+            "AND sender_id!='bot' "
             "ORDER BY id LIMIT ?",
             (*parts, int(cursor), int(limit)),
         )
+
+    def _fetch_latest(self, umo: str, cursor: int, limit: int) -> list[dict]:
+        """取最近一段未读（积压时跳读）：先倒序取最近 N 条再反转成正序。"""
+        parts = self._umo_parts(umo)
+        if not parts[0]:
+            return []
+        rows = self.store.rows(
+            "SELECT id,ts,text,sender_id,sender_name,mentioned FROM activity_messages "
+            "WHERE platform_id=? AND kind=? AND conversation_id=? AND id>? "
+            "AND sender_id!='bot' "
+            "ORDER BY id DESC LIMIT ?",
+            (*parts, int(cursor), int(limit)),
+        )
+        rows.reverse()
+        return rows
 
     # ------------------------------------------------------------------
     # 材料与提示词
@@ -139,7 +194,11 @@ class Topic:
             lines.append(f"{label}：{text[: self.plugin.topic_line_max_chars]}")
         if not lines:
             return ""
-        head = f"（以上是最近 {len(lines)} 条未读消息，{backfill} 条为往前补的上下文）"
+        # 补段是段末之后更新的消息，方向是「后续」而不是「往前补」。
+        head = f"（以上共 {len(lines)} 条"
+        if backfill > 0:
+            head += f"，后 {backfill} 条为衔接用的后续消息"
+        head += "）"
         return "\n".join([head, *lines])
 
     def _build_prompt(self, material: str) -> str:
@@ -178,32 +237,81 @@ class Topic:
     # 模型调用
     # ------------------------------------------------------------------
 
+    async def _provider_by_id(self, manager, provider_id: str):
+        """按 ID 取模型；取不到返回 None（异常只记一条限频告警）。"""
+        get_by_id = getattr(manager, "get_provider_by_id", None)
+        if not callable(get_by_id):
+            return None
+        try:
+            return await get_by_id(provider_id)
+        except Exception as exc:
+            self._warn_throttled(
+                f"topic-provider-err:{provider_id}",
+                "[糯小喵] 话题概括模型 %s 获取异常: %s",
+                provider_id,
+                exc,
+            )
+            return None
+
+    async def _session_default_provider(self, manager, umo: str):
+        """会话默认模型：优先核心异步接口，旧核心退回同步接口。"""
+        try:
+            from astrbot.core.provider.entities import ProviderType
+        except Exception:
+            return None
+        get_async = getattr(manager, "get_using_provider_async", None)
+        if callable(get_async):
+            try:
+                # 核心签名是 get_using_provider_async(provider_type, umo=None)，
+                # provider_type 必填；漏传会抛 TypeError 被吞成「没有模型」。
+                return await get_async(ProviderType.CHAT_COMPLETION, umo=umo or None)
+            except TypeError:
+                # 早期核心不接受 umo 关键字：退化为只传类型。
+                try:
+                    return await get_async(ProviderType.CHAT_COMPLETION)
+                except Exception as exc:
+                    self._warn_throttled(
+                        "topic-default-provider",
+                        "[糯小喵] 话题概括回退默认模型失败: %s",
+                        exc,
+                    )
+                    return None
+            except Exception as exc:
+                self._warn_throttled(
+                    "topic-default-provider",
+                    "[糯小喵] 话题概括回退默认模型失败: %s",
+                    exc,
+                )
+                return None
+        get_sync = getattr(manager, "get_using_provider", None)
+        if not callable(get_sync):
+            return None
+        try:
+            return get_sync(ProviderType.CHAT_COMPLETION)
+        except Exception as exc:
+            self._warn_throttled(
+                "topic-default-provider", "[糯小喵] 话题概括回退默认模型失败: %s", exc
+            )
+            return None
+
     async def resolve_provider(self, umo: str = ""):
-        """解析话题模型：配置指定 → 会话默认模型；拿不到返回 None。"""
+        """解析话题模型：显式指定就只用它；未指定才回退会话默认模型。"""
         manager = getattr(self.plugin.context, "provider_manager", None)
         if manager is None:
             return None
         light_id = str(getattr(self.plugin, "topic_light_provider_id", "") or "").strip()
         if light_id:
-            try:
-                provider = await manager.get_provider_by_id(light_id)
-            except Exception:
-                provider = None
+            provider = await self._provider_by_id(manager, light_id)
             if provider is not None and callable(getattr(provider, "text_chat", None)):
                 return provider
-        try:
-            get_async = getattr(manager, "get_using_provider_async", None)
-            if callable(get_async):
-                provider = await get_async(umo=umo or None)
-            else:
-                from astrbot.core.provider.entities import ProviderType
-
-                provider = manager.get_using_provider(ProviderType.CHAT_COMPLETION)
-        except Exception:
-            provider = None
-        if provider is not None and callable(getattr(provider, "text_chat", None)):
-            return provider
-        return None
+            # 明确指定了模型却拿不到：本轮跳过而不是悄悄换成别的模型。
+            self._warn_throttled(
+                f"topic-provider:{light_id}",
+                "[糯小喵] 话题概括模型 %s 不可用，本轮跳过（topic_light_provider_id）",
+                light_id,
+            )
+            return None
+        return await self._session_default_provider(manager, umo)
 
     # ------------------------------------------------------------------
     # 主流程
@@ -216,18 +324,40 @@ class Topic:
             return False
         state = self.store.topic_state(umo)
         cursor = state["topic_to_id"]
-        backfill_max = p.topic_segment_backfill_max
-        rows = self._fetch_pending(umo, cursor, p.topic_segment_msg_count + backfill_max)
+        segment = p.topic_segment_msg_count
+        pending = self._pending_count(umo, cursor)
+        backlog = pending > 2 * segment
+        if backlog:
+            # 积压太多时不从最旧追：直接看最新一段，否则话题永远落后于群现状。
+            rows = self._fetch_latest(
+                umo, cursor, segment + p.topic_segment_backfill_max
+            )
+            logger.info(
+                "[糯小喵] 话题概括积压 %d 条，跳到最新 %d 条: umo=%s",
+                pending,
+                len(rows),
+                umo,
+            )
+        else:
+            rows = self._fetch_pending(
+                umo, cursor, segment + p.topic_segment_backfill_max
+            )
         if len(rows) < p.topic_min_unread:
+            self._mark_failed(umo)
             return False
-        backfill = max(0, len(rows) - p.topic_segment_msg_count)
-        material_rows = rows[: p.topic_segment_msg_count]
-        material = self._build_material(umo, material_rows, backfill)
+        backfill = max(0, len(rows) - segment)
+        # 材料带上补段（段末之后更近的消息）；游标仍只推进到本段末行。
+        window = rows if backlog else rows[:segment]
+        material = self._build_material(umo, rows, backfill)
         if not material:
+            self._mark_failed(umo)
             return False
         provider = await self.resolve_provider(umo)
-        if provider is None:
-            logger.warning("[糯小喵] 话题概括跳过：没有可用模型")
+        if provider is None or not callable(getattr(provider, "text_chat", None)):
+            self._mark_failed(umo)
+            self._warn_throttled(
+                "topic-no-provider", "[糯小喵] 话题概括跳过：没有可用模型"
+            )
             return False
         # 自主运行进行中时，背景概括同样计入本轮 token 预算（审查 H12）。
         if CURRENT_RUN.get() is not None:
@@ -239,19 +369,32 @@ class Topic:
             )
             raw = str(getattr(resp, "completion_text", "") or "").strip()
         except asyncio.TimeoutError:
-            logger.debug("[糯小喵] 话题概括超时")
+            self._mark_failed(umo)
+            self._warn_throttled(
+                f"topic-timeout:{umo}", "[糯小喵] 话题概括超时: umo=%s", umo
+            )
             return False
         except Exception as exc:
-            logger.debug("[糯小喵] 话题概括调用失败: %s", exc)
+            self._mark_failed(umo)
+            self._warn_throttled(
+                f"topic-call:{umo}",
+                "[糯小喵] 话题概括调用失败: umo=%s err=%s",
+                umo,
+                exc,
+            )
             return False
         topic, summary = self._parse_topic(raw, p.topic_max_chars)
         if not topic and not summary:
+            self._mark_failed(umo)
+            self._warn_throttled(
+                f"topic-parse:{umo}", "[糯小喵] 话题概括输出无法解析: umo=%s", umo
+            )
             return False
         if not summary:
             summary = topic
         now = time.time()
-        first = material_rows[0]
-        last = material_rows[-1]
+        first = window[0]
+        last = window[-1]
         self.store.append_topic_segment(
             umo,
             int(first["id"]),
@@ -261,10 +404,11 @@ class Topic:
             summary,
         )
         self.store.set_topic_state(umo, topic, int(last["id"]), now)
+        self._failed_at.pop(umo, None)
         logger.info(
             "[糯小喵] 话题概括完成: umo=%s rows=%d topic=%s",
             umo,
-            len(material_rows),
+            len(rows),
             topic,
         )
         return True

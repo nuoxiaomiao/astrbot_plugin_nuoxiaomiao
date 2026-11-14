@@ -8,6 +8,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from astrbot.api import logger
+
 SCHEMA_VERSION = "5"
 MOODS = ("平静", "开心", "低落", "疲惫", "烦躁", "专注", "期待")
 
@@ -87,12 +89,29 @@ class Conflict(ValueError):
     pass
 
 
+def _delete_children(db: sqlite3.Connection, table: str, run_ids: list[int]) -> int:
+    """按 run_id 批量删除子表行，返回本表实际删除行数。
+
+    executemany() 的 rowcount 是各次删除之和；万一驱动返回 -1 就退回按
+    run_ids 计数。表名只来自本模块的常量，不接外部输入。
+    """
+    cursor = db.executemany(
+        f"DELETE FROM {table} WHERE run_id=?", ((rid,) for rid in run_ids)
+    )
+    return cursor.rowcount if cursor.rowcount >= 0 else len(run_ids)
+
+
 class Store:
     def __init__(self, plugin):
         self.plugin = plugin
 
     @contextmanager
     def transaction(self):
+        """SQLite 事务 + 插件级连接锁。
+
+        块内异常照常向上抛，由 with conn 上下文负责回滚；这里不吞异常，
+        否则调用方会把半截写入当成成功。
+        """
         conn = self.plugin._get_activity_db()
         with self.plugin._activity_db_lock, conn:
             yield conn
@@ -486,36 +505,53 @@ class Store:
         return (rows[0]["kept"] if rows else 0, rows[0]["descs"] if rows else 0)
 
     def vision_cleanup(self, image_keep_days, ttl_days):
-        """清理过期留底行与描述缓存，返回 (删行, 删图, 删描述) 计数。"""
+        """清理过期留底行与描述缓存，返回 (删行, 删图, 删描述) 计数。
+
+        image_keep_days<=0 按「至少保留 1 天」处理：0 会把全部留底当成过期数据
+        一次删光，等于静默关掉识图留底，与 cleanup_runs 对 0 的保底也不一致。
+        先删文件、成功了再删行：中途崩溃只会剩下多余的行（下次还能重试），
+        不会留下孤儿文件；文件删不掉时保留行，交由下一轮重试。
+        """
         now = time.time()
+        cutoff = now - max(1, int(image_keep_days)) * 86400
+        stale = self.rows("SELECT id,path FROM vision_kept_images WHERE ts<?", (cutoff,))
+        removed_files = 0
+        deleted_ids = []
+        for row in stale:
+            try:
+                Path(row["path"]).unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning(
+                    "[糯小喵] 识图留底文件删除失败，保留记录重试: %s (%s)",
+                    row["path"],
+                    exc,
+                )
+                continue
+            deleted_ids.append(int(row["id"]))
+            removed_files += 1
+        removed_rows = 0
         with self.transaction() as db:
-            stale = db.execute(
-                "SELECT path FROM vision_kept_images WHERE ts<?",
-                (now - max(0, int(image_keep_days)) * 86400,),
-            ).fetchall()
-            removed_rows = db.execute(
-                "DELETE FROM vision_kept_images WHERE ts<?",
-                (now - max(0, int(image_keep_days)) * 86400,),
-            ).rowcount
+            if deleted_ids:
+                removed_rows = db.executemany(
+                    "DELETE FROM vision_kept_images WHERE id=?",
+                    ((rid,) for rid in deleted_ids),
+                ).rowcount
+                if removed_rows < 0:
+                    removed_rows = len(deleted_ids)
             removed_desc = db.execute(
                 "DELETE FROM vision_caption_cache WHERE ts<?",
                 (now - max(0, int(ttl_days)) * 86400,),
             ).rowcount
-        removed_files = 0
-        for (path,) in stale:
-            try:
-                Path(path).unlink(missing_ok=True)
-                removed_files += 1
-            except OSError:
-                pass
         return (removed_rows, removed_files, removed_desc)
 
     def cleanup_runs(self, retention_days: int) -> dict[str, int]:
-        """按保留天数清理自主运行审计日志（审查 C2/C3）。
+        """按保留天数清理自主运行审计日志（审查 C1/C2/C3）。
 
-        删除过期 resident_runs 及其关联的 actions / tool_requests / sends /
-        deferred，以及过期的 topic_segments 与每日用量统计。这些全是日志型
-        数据，删除不影响当前人设状态、未读信箱与识图留底。
+        只清已到终态的 resident_runs 及其 actions / tool_requests / sends；
+        尚未收尾的 run 与还挂着待触发顺延的 run 一律保留（见下方 SQL 注释）。
+        deferred 只在父 run 已消失且顺延安排不再是 pending/sending 时清；
+        另外清理过期 topic_segments 与每日用量。这些都是日志型数据，不动
+        人设状态、未读信箱与识图留底。
         """
         if int(retention_days) <= 0:
             retention_days = 30
@@ -531,37 +567,39 @@ class Store:
             "daily_usage": 0,
         }
         with self.transaction() as db:
+            # 只清已到终态的 run：还在 pending/preparing/running/paused/stopped
+            # 的还要由 recover() 或运行中的任务收尾。另外挂着待触发顺延的
+            # run 也必须留着——deliver_pending() 靠 resident_deferred 找回原
+            # run，才能执行「仅原 run 成功才投递」的保险丝；提前删掉 run
+            # 会让三周后的提醒绕过检查直接发出（审查 C1）。
             old_run_ids = [
                 row[0]
                 for row in db.execute(
-                    "SELECT id FROM resident_runs WHERE started < ?",
+                    "SELECT id FROM resident_runs WHERE started<? "
+                    "AND status NOT IN "
+                    "('pending','preparing','running','paused','stopped','sending') "
+                    "AND NOT EXISTS ("
+                    "SELECT 1 FROM resident_deferred d "
+                    "JOIN proactive_pending p ON p.id=d.pending_id "
+                    "WHERE d.run_id=resident_runs.id "
+                    "AND p.status IN ('pending','sending'))",
                     (cutoff,),
                 ).fetchall()
             ]
             if old_run_ids:
-                before = db.total_changes
-                db.executemany(
-                    "DELETE FROM resident_actions WHERE run_id=?",
-                    ((rid,) for rid in old_run_ids),
+                # 四张子表各用自己的 rowcount，日志里才对得上真实删除量。
+                removed["actions"] = _delete_children(db, "resident_actions", old_run_ids)
+                removed["tool_requests"] = _delete_children(
+                    db, "resident_tool_requests", old_run_ids
                 )
-                db.executemany(
-                    "DELETE FROM resident_tool_requests WHERE run_id=?",
-                    ((rid,) for rid in old_run_ids),
-                )
-                db.executemany(
-                    "DELETE FROM resident_sends WHERE run_id=?",
-                    ((rid,) for rid in old_run_ids),
-                )
-                db.executemany(
-                    "DELETE FROM resident_deferred WHERE run_id=?",
-                    ((rid,) for rid in old_run_ids),
-                )
-                removed["actions"] = db.total_changes - before
-                db.executemany(
+                removed["sends"] = _delete_children(db, "resident_sends", old_run_ids)
+                cursor = db.executemany(
                     "DELETE FROM resident_runs WHERE id=?",
                     ((rid,) for rid in old_run_ids),
                 )
-                removed["runs"] = len(old_run_ids)
+                removed["runs"] = (
+                    cursor.rowcount if cursor.rowcount >= 0 else len(old_run_ids)
+                )
             # 孤儿行兜底：父 run 已被删除（例如崩溃期间）的行一并清掉。
             removed["actions"] += db.execute(
                 "DELETE FROM resident_actions WHERE run_id NOT IN (SELECT id FROM resident_runs)"
@@ -572,8 +610,12 @@ class Store:
             removed["sends"] += db.execute(
                 "DELETE FROM resident_sends WHERE run_id NOT IN (SELECT id FROM resident_runs)"
             ).rowcount
+            # 顺延记录只在「父 run 真的没了」且「对应安排已不再是 pending/
+            # sending」时删；待触发的顺延必须留到投递完成，否则没法再取消。
             removed["deferred"] += db.execute(
-                "DELETE FROM resident_deferred WHERE run_id NOT IN (SELECT id FROM resident_runs)"
+                "DELETE FROM resident_deferred WHERE run_id NOT IN "
+                "(SELECT id FROM resident_runs) AND pending_id NOT IN "
+                "(SELECT id FROM proactive_pending WHERE status IN ('pending','sending'))"
             ).rowcount
             removed["topic_segments"] = db.execute(
                 "DELETE FROM resident_topic_segments WHERE start_ts<?",

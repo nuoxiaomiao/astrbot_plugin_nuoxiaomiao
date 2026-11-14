@@ -95,20 +95,33 @@ if __package__:
         normalize_config,
         preload_config_migration,
     )
+    from . import outputpro_split
     from .qq_official import (
+        QQ_OFFICIAL_PASSIVE_REPLY_LIMIT,
         apply_content_mode,
         at_id_deliverable,
         clean_platform_text,
+        delivery_ready,
+        display_name_fallback,
+        is_mergeable_at,
+        is_permission_error,
         is_qq_official,
         is_qq_official_platform_id,
-        is_mergeable_at,
-        plan_bubbles,
+        is_qq_official_platform_name,
+        is_supported_raw_message,
+        normalize_inbound_components,
+        normalize_outbound_components,
+        platform_capability_note,
         platform_id_of_inst,
         platform_name_of_inst,
-        qq_official_group_send_ready,
         sanitize_outbound_components,
+        scene_of_event,
+        split_text_for_limit,
+        strip_at_markup,
     )
+    from .send_order import OBSERVER_WAIT_SECONDS, SendOrderGate
 else:
+    import outputpro_split
     from config_support import (
         atomic_write_bytes,
         atomic_write_json,
@@ -119,18 +132,29 @@ else:
         preload_config_migration,
     )
     from qq_official import (
+        QQ_OFFICIAL_PASSIVE_REPLY_LIMIT,
         apply_content_mode,
         at_id_deliverable,
         clean_platform_text,
+        delivery_ready,
+        display_name_fallback,
+        is_mergeable_at,
+        is_permission_error,
         is_qq_official,
         is_qq_official_platform_id,
-        is_mergeable_at,
-        plan_bubbles,
+        is_qq_official_platform_name,
+        is_supported_raw_message,
+        normalize_inbound_components,
+        normalize_outbound_components,
+        platform_capability_note,
         platform_id_of_inst,
         platform_name_of_inst,
-        qq_official_group_send_ready,
         sanitize_outbound_components,
+        scene_of_event,
+        split_text_for_limit,
+        strip_at_markup,
     )
+    from send_order import OBSERVER_WAIT_SECONDS, SendOrderGate
 
 # StarManager imports this module before loading AstrBotConfig with the schema.
 # Migrate aliases at that point, before newly inserted defaults can hide them.
@@ -229,8 +253,6 @@ SELF_WAKE_RUN_RETENTION_DAYS = 7       # 自醒记录保留天数（与速览库
 # 会话速览：记录放在 AstrBot data/plugin_data 的 SQLite 里，重启不丢。
 ACTIVITY_DB_NAME = "activity.db"
 ACTIVITY_PRUNE_INTERVAL_SECONDS = 3600.0
-# 速览库写入的合并提交间隔：高频群不必每条消息一次 commit。
-ACTIVITY_COMMIT_INTERVAL_SECONDS = 2.0
 ACTIVITY_ABSOLUTE_MAX_ROWS = 200_000
 ACTIVITY_SESSION_MATCH_LIMIT = 10
 # 单次查询展开的会话上限：每个会话 3 个 SQLite 参数，默认变量上限 999，
@@ -250,7 +272,11 @@ CAPABILITY_HINT_PROACTIVE = (
     "当用户让你转告/通知某人、或你自己想对别的会话说一句话时，调用 send_message"
     "（允许范围内）：写下你想说的事（intent），那边的你会带着那边的对话语境"
     "把话自然说出来，不会突兀；可选 at 指定@谁。"
-    "不要用 send_message 在当前会话里代替普通回复。"
+    "普通聊天不要用 send_message 代替回复；但用户明确要求测试/验证主动消息，"
+    "或指定 target=当前/这里/这边 时，必须调用它：target 传「当前」即可，"
+    "不要因为空字符串或没有群号就拒绝。"
+    "不要因为人设里写了 send_message_to_user，就改用那个工具——本次要调用的是"
+    "插件提供的 send_message（带 target/intent/at 三个参数）。"
     "傲娇可等不了太久——想找谁就去找。"
 )
 CAPABILITY_REMINDER_HEADER = (
@@ -348,193 +374,19 @@ LEGACY_CUSTOM_TOOL_CALL_PROMPT = (
 )
 
 
-# --- 拟人回复（借鉴 IRMIA 作者的思路） ---
-# 「说话的时候按字数 sleep，sleep 期间有其他输入就打断重新 sleep，正常人打字
-# 60~90 字每分钟」——等待发生在回复侧而不是输入侧，防抖与合并直接涌现。
-# 拆条规则融合 IRMIA chat-split 与 OutputPro TextTokenizer 之长。
 SEND_OBSERVER_DECORATE_PRIORITY = 16
-HUMAN_REPLY_DECORATE_PRIORITY = 14  # OutputPro (15) 完成处理后才接管未发送的纯文本。
-# QQ 官方纯文本模式：优先级最低，等所有改写（含 OutputPro）结束后再给结果链打标记。
-QQ_OFFICIAL_CONTENT_MODE_PRIORITY = 5
+# QQ 官方纯文本模式：在 OutputPro (15) 之前先标一次，再在所有插件之后兜底标一次。
+QQ_OFFICIAL_CONTENT_MODE_PRIORITY = 17
+QQ_OFFICIAL_CONTENT_MODE_FALLBACK_PRIORITY = 5
 SEND_OBSERVER_EXTRA = "nuoxiaomiao_send_observer"
+QQ_SCENE_EXTRA = "nuoxiaomiao_qq_scene"
+QQ_PASSIVE_SENDS_EXTRA = "nuoxiaomiao_qq_passive_sends"
+NO_BRAIN_EXTRA = "nuoxiaomiao_no_brain"
+BRAIN_LOCK_WAIT_SECONDS = 180.0
 UNTRACKED_SEND_TYPES = {
     "reasoning", "tool_call", "tool_call_result", "tool_direct_result",
     "agent_stats", "tts", "audio", "audio_chunk", "tts_stats", "break",
 }
-HUMAN_REPLY_TYPING_SLICE_SECONDS = 0.5  # 打字等待分片：打断最迟半秒内生效
-HUMAN_REPLY_TYPING_REFRESH_SECONDS = 2.5  # 「正在输入」状态的续期间隔
-HUMAN_REPLY_ACTION_TIMEOUT_SECONDS = 2.5  # 单次平台动作（typing 等）的超时
-HUMAN_REPLY_NOTE_TTL_SECONDS = 600.0  # 打断提示的有效期，过期不注入
-HUMAN_REPLY_MIN_SPLIT_CHARS = 12  # 整段不足这个字数就不拆，一条发完
-HUMAN_REPLY_HARD_CHUNK_CHARS = 60  # 单段超过这个字数且无断点时按词边界硬切
-HUMAN_REPLY_SHORT_EXCLAIM_CHARS = 5  # 感叹号前的内容不超过这么多字就保留语气不摘
-
-# 成对符号：内部不断句；全文配对不齐就整段不拆，宁可慢一点也不劈坏结构。
-_HR_PAIR_MAP = {
-    "（": "）",
-    "(": ")",
-    "【": "】",
-    "[": "]",
-    "《": "》",
-    "「": "」",
-    "『": "』",
-    "“": "”",
-    "‘": "’",
-}
-# ASCII 引号成对翻转：单双引号与反引号按出现次数配对。
-_HR_TOGGLE_QUOTES = {'"', "'", "`"}
-# 摘掉标点并断句（句号、逗号、换行）。
-_HR_STRIP_BREAK = {"。", "，", ",", "\n"}
-# 保留标点但在其后断句。
-_HR_KEEP_BREAK = {"？", "…", "；", "～", "~"}
-# 颜文字保护（借鉴 OutputPro）：带括号且内含符号的块不当标点处理。
-_HR_KAOMOJI_RE = re.compile(
-    r"[(\[\uff08\u3010<][^()\[\]\uff08\uff09\u3010\u3011<>]*?"
-    r"[^\u4e00-\u9fffA-Za-z0-9\s][^()\[\]\uff08\uff09\u3010\u3011<>]*?"
-    r"[)\]\uff09\u3011>]"
-)
-# 代码块整体保护：块内的换行和标点都不构成断点。
-_HR_CODEBLOCK_RE = re.compile(r"```.*?```", re.S)
-_HR_WORD_TAIL_RE = re.compile(r"[A-Za-z0-9._~/\-#]+$")
-
-
-def _hr_restore(text: str, restores: dict[str, str]) -> str:
-    for token, original in restores.items():
-        if token in text:
-            text = text.replace(token, original)
-    return text
-
-
-def _hr_hard_chunks(segment: str) -> list[str]:
-    """超长且没有断点的段兜底硬切，切点优先落在中英文/空格边界上。"""
-    if len(segment) <= HUMAN_REPLY_HARD_CHUNK_CHARS:
-        return [segment]
-    chunks: list[str] = []
-    rest = segment
-    while len(rest) > HUMAN_REPLY_HARD_CHUNK_CHARS:
-        cut = HUMAN_REPLY_HARD_CHUNK_CHARS
-        # 从切点往回找一个中英文边界或空格，避免把 URL、单词、小数劈成两半。
-        for j in range(cut, max(cut - 15, 5), -1):
-            prev = rest[j - 1]
-            nxt = rest[j]
-            a = prev.isascii() and prev.isalnum()
-            b = nxt.isascii() and nxt.isalnum()
-            if (a and not b) or (not a and b) or prev == " ":
-                cut = j
-                break
-        chunks.append(rest[:cut].strip())
-        rest = rest[cut:].lstrip()
-    if rest.strip():
-        chunks.append(rest.strip())
-    return chunks
-
-
-def _split_reply_text(text: str) -> list[str]:
-    """把一段回复按「人说话的停顿」拆成若干条。
-
-    只认中文标点做断点：句号/逗号摘掉后断句；感叹号短句保留、长句摘掉断句；
-    问号/省略号/分号/波浪号保留原样并断句；顿号不断；换行断。
-    ASCII 的 . ! ? ; 不是断点，防劈开 URL、文件名、版本号。
-    """
-    plain = (text or "").strip()
-    if not plain:
-        return []
-    # 先把代码块和颜文字换成零宽占位符，断句逻辑就不会碰它们内部的字符。
-    restores: dict[str, str] = {}
-
-    def _protect(pattern: re.Pattern[str], prefix: str) -> None:
-        nonlocal plain
-
-        def _sub(match: re.Match[str]) -> str:
-            token = f"\u200b{prefix}{len(restores)}\u200b"
-            restores[token] = match.group(0)
-            return token
-
-        plain = pattern.sub(_sub, plain)
-
-    _protect(_HR_CODEBLOCK_RE, "C")
-    _protect(_HR_KAOMOJI_RE, "K")
-
-    segments: list[str] = []
-    buf = ""
-    stack: list[str] = []
-
-    def _flush() -> None:
-        nonlocal buf
-        segment = _hr_restore(buf, restores).strip()
-        buf = ""
-        if segment:
-            segments.append(segment)
-
-    for ch in plain:
-        if ch in _HR_PAIR_MAP:
-            stack.append(ch)
-            buf += ch
-            continue
-        if ch in _HR_TOGGLE_QUOTES:
-            if stack and stack[-1] == ch:
-                stack.pop()
-            else:
-                stack.append(ch)
-            buf += ch
-            continue
-        if stack:
-            if ch == _HR_PAIR_MAP.get(stack[-1]):
-                stack.pop()
-            buf += ch
-            continue
-        if ch in _HR_STRIP_BREAK:
-            if buf.strip() or not segments:
-                _flush()
-            continue
-        if ch == "！":
-            # 短句的感叹号保留语气，长句摘掉断句（与 IRMIA 同款规则）。
-            if len(buf.strip()) <= HUMAN_REPLY_SHORT_EXCLAIM_CHARS:
-                buf += ch
-            elif buf.strip() or not segments:
-                _flush()
-            continue
-        if ch in _HR_KEEP_BREAK:
-            if buf.strip():
-                buf += ch
-                _flush()
-            elif segments:
-                # 连续标点（如省略号写两个）不单独成条，并进上一段。
-                segments[-1] += ch
-            else:
-                buf += ch
-            continue
-        buf += ch
-
-    if buf.strip() or not segments:
-        _flush()
-    if stack:
-        # 配对不齐：宁可整段不拆，也不把括号里的内容劈成两半。
-        whole = _hr_restore(plain, restores).strip()
-        return [whole] if whole else []
-
-    total_chars = len(re.sub(r"\s", "", plain))
-    if total_chars < HUMAN_REPLY_MIN_SPLIT_CHARS and len(segments) > 1:
-        return [_hr_restore(plain, restores).strip()]
-
-    final: list[str] = []
-    for segment in segments:
-        final.extend(_hr_hard_chunks(segment))
-    return final
-
-
-@dataclass
-class HumanReplyState:
-    """一个会话里正在逐条打字的任务的控制柄。"""
-
-    task: asyncio.Task | None = None
-    interrupted: bool = False
-    sent_count: int = 0
-    total: int = 0
-    umo: str = ""
-    segments: list[str] = field(default_factory=list)
-    # 本轮回复开始的时间（monotonic），QQ 官方被动回复窗口预算从这里起算。
-    started_at: float = 0.0
 
 
 @dataclass
@@ -584,8 +436,8 @@ class ActivityEntry:
 @register(
     PLUGIN_NAME,
     "nuoxiaomiao",
-    "糯小喵 - 用户屏蔽 / 连刷拦截 / 关键词唤醒 / 连发合并 / 会话速览 / 主动消息（send_message 即时说话、目标语境生成） / 静默自醒 / 长期记忆 / QQ 官方机器人平台适配",
-    "2.4.0",
+    "糯小喵 - 用户屏蔽 / 连刷拦截 / 关键词唤醒 / 连发合并 / 会话速览 / 主动消息（send_message 即时说话、目标语境生成） / 静默自醒 / 长期记忆 / QQ 官方机器人平台适配 / 整轮发送排队（兼容 AstrNa 群聊并发回复）",
+    "2.5.2",
 )
 class NuoxiaomiaoPlugin(Star):
     """本机糯小喵：用户屏蔽、连刷拦截、关键词唤醒、智能防抖合并、会话速览、主动消息与长期记忆按需检索。"""
@@ -655,19 +507,20 @@ class NuoxiaomiaoPlugin(Star):
         # 私聊「对方正在输入」：merge key -> 这个时刻之前都算还在打字。
         self._typing_until: dict[str, float] = {}
 
-        # 拟人回复：merge key -> 正在逐条打字/排队的任务列表；打断提示按会话记一次性账。
-        self._human_reply_tasks: dict[str, list[HumanReplyState]] = {}
-        self._human_reply_locks: dict[str, asyncio.Lock] = {}
-        self._human_reply_interrupt_notes: dict[str, dict[str, Any]] = {}
-        # 在飞 LLM 请求登记（打断模型阶段2）：merge key -> 正在生成的事件。
-        # 收到该用户新消息时 stop_event() 掐掉本轮，新消息攒批重新起一轮。
-        self._turn_inflight: dict[str, Any] = {}
-        self._warned_outputpro_overlap = False
+        # 整轮发送排队（与 AstrNa 群聊并发回复共存；无 AstrNa 时用本地锁）。
+        self._send_order = SendOrderGate(self)
+        # 限频告警：key -> 最近一次 warning 的 monotonic 时刻。
+        self._warn_limited_at: dict[str, float] = {}
+
+        # QQ 官方：群名缓存与主动发送 ack 锁。
+        self._qq_official_group_name_cache: dict[tuple[str, str], str] = {}
+        self._qq_official_group_name_miss_ts: dict[tuple[str, str], float] = {}
+        self._qq_official_name_lock = asyncio.Lock()
+        self._qq_official_ack_lock = asyncio.Lock()
 
         # 本地化图片的孤儿清扫节流（monotonic）；账本在内存，重启即失忆，
         # 只能靠周期性扫盘兜底。
         self._last_localized_sweep_ts = 0.0
-        # 速览库的提交节流：高频群每条消息都 commit 太重，按间隔合并提交。
         self._activity_commit_ts = 0.0
 
         # 共享记忆与信箱的后台任务集合（识图转述、话题概括）：防 GC 中断，
@@ -682,6 +535,14 @@ class NuoxiaomiaoPlugin(Star):
     async def initialize(self) -> None:
         """AstrBot 加载完插件后自动调用：恢复未触发的主动消息，启动自醒。"""
         await self.resident.initialize()
+        try:
+            outputpro_split.enable_qq_official()
+        except Exception as exc:
+            logger.debug("[%s] 启用 OutputPro QQ 官方分段失败: %s", DISPLAY_NAME, exc)
+        try:
+            logger.info("[%s] 整轮发送排队: %s", DISPLAY_NAME, self._send_order.describe())
+        except Exception as exc:
+            logger.debug("[%s] 整轮发送排队后端探测失败: %s", DISPLAY_NAME, exc)
         try:
             await self._load_pending_proactive()
         except Exception as exc:
@@ -796,17 +657,23 @@ class NuoxiaomiaoPlugin(Star):
         self.qq_official_content_mode = self._get_bool(
             "qq_official_content_mode", True
         )
-        self.qq_official_max_bubbles = max(
-            0, self._get_int("qq_official_max_bubbles", 4)
-        )
-        self.qq_official_passive_window_seconds = max(
-            1, self._get_int("qq_official_passive_window_seconds", 240)
-        )
         self.qq_official_group_proactive = self._get_bool(
             "qq_official_group_proactive", False
         )
         self.qq_official_strip_at_markup = self._get_bool(
             "qq_official_strip_at_markup", True
+        )
+        self.qq_official_admin_openids = self._normalize_str_set(
+            self._runtime_config.get("qq_official_admin_openids", [])
+        )
+        self.qq_official_quote_trigger = self._get_bool(
+            "qq_official_quote_trigger", True
+        )
+        self.qq_official_text_chars = max(
+            0, self._get_int("qq_official_text_chars", 2000)
+        )
+        self.qq_official_flatten_forward = self._get_bool(
+            "qq_official_flatten_forward", True
         )
 
         # --- 关键词唤醒（替代 spectrecore 的“叫名字就回应”） ---
@@ -865,34 +732,6 @@ class NuoxiaomiaoPlugin(Star):
             self._runtime_config.get("debounce_end_punctuation", "") or "。！？!?…~"
         )
         self.debounce_max_parts = max(1, self._get_int("debounce_max_parts", 8))
-
-        # --- 拟人回复（借鉴 IRMIA：按打字速度逐条说，来新消息打断重来） ---
-        # 默认关；开启后在前置输出处理完成后接管未发送的纯文本。
-        self.human_reply_enabled = self._get_bool("human_reply_enabled", False)
-        self.human_reply_chars_per_minute = max(
-            10, self._get_int("human_reply_chars_per_minute", 240)
-        )
-        self.human_reply_interrupt_enabled = self._get_bool(
-            "human_reply_interrupt_enabled", True
-        )
-        self.human_reply_show_input_status = self._get_bool(
-            "human_reply_show_input_status", True
-        )
-        self.human_reply_max_wait_seconds = max(
-            1.0, self._get_float("human_reply_max_wait_seconds", 20.0)
-        )
-        # 0 表示不限制；超长回复不接管，交回原管线（含 OutputPro 的文转图等）。
-        self.human_reply_max_length = max(
-            0, self._get_int("human_reply_max_length", 300)
-        )
-        # 拟人回复的群聊黑白名单：黑名单群不接管；白名单非空则只接管名单内的群。
-        self.human_reply_group_whitelist = self._normalize_str_set(
-            self._runtime_config.get("human_reply_group_whitelist", [])
-        )
-        self.human_reply_group_blacklist = self._normalize_str_set(
-            self._runtime_config.get("human_reply_group_blacklist", [])
-        )
-        self._warn_outputpro_overlap()
 
         # --- 自定义工具调用提示词（覆盖 AstrBot 写死的 TOOL_CALL_PROMPT） ---
         self.tool_call_prompt_enabled = self._get_bool(
@@ -1371,6 +1210,35 @@ class NuoxiaomiaoPlugin(Star):
         provider_id = effective.get("proactive_judge_provider_id")
         if provider_id and provider_id not in {item["id"] for item in self._provider_catalog()}:
             diagnostics.append({"code": "self_wake_provider_unavailable", "severity": "warning", "message": "指定的自醒模型当前不可用；请重新选择模型。", "fields": ["proactive_judge_provider_id"]})
+        recording_on = bool(effective.get("activity_buffer_enabled"))
+        if effective.get("unread_inbox_enabled") and not recording_on:
+            diagnostics.append(
+                {
+                    "code": "inbox_requires_recording",
+                    "severity": "warning",
+                    "message": "未读信箱分流依赖「记录聊天」：当前记录已关闭，信箱既收不到内容、也不会生效（分流会自动跳过）。",
+                    "fields": ["unread_inbox_enabled", "activity_buffer_enabled"],
+                }
+            )
+        if effective.get("topic_summary_enabled") and not recording_on:
+            diagnostics.append(
+                {
+                    "code": "topic_requires_recording",
+                    "severity": "warning",
+                    "message": "话题概括依赖「记录聊天」：当前记录已关闭，没有可概括的消息。",
+                    "fields": ["topic_summary_enabled", "activity_buffer_enabled"],
+                }
+            )
+        inbox_scope = self._normalize_str_list(effective.get("inbox_group_whitelist"))
+        if effective.get("unread_inbox_enabled") and inbox_scope and not effective.get("activity_group_whitelist"):
+            diagnostics.append(
+                {
+                    "code": "inbox_scope_not_subset",
+                    "severity": "info",
+                    "message": "信箱只在这些群分流，但记录名单为空（等于记录全部）。分流需要先能记录，请确认这些群也在记录范围内。",
+                    "fields": ["inbox_group_whitelist", "activity_group_whitelist"],
+                }
+            )
         return diagnostics
 
     def _validate_web_config(self, incoming: dict, schema: dict) -> tuple[dict[str, Any], dict[str, str]]:
@@ -1606,7 +1474,7 @@ class NuoxiaomiaoPlugin(Star):
     # ------------------------------------------------------------------
 
     def _maybe_log_qq_official_state(self, event: AstrMessageEvent) -> None:
-        """首次收到 QQ 官方消息时打一条生效参数日志。
+        """首次收到 QQ 官方消息时打一条生效参数与能力边界日志。
 
         initialize() 跑在平台适配器加载之前（那时 platform_insts 还是空的），
         所以把平台识别与生效参数放到第一条真实消息上，排障时一眼可见。
@@ -1614,22 +1482,202 @@ class NuoxiaomiaoPlugin(Star):
         if getattr(self, "_qq_official_state_logged", False):
             return
         self._qq_official_state_logged = True
+        if not getattr(self, "qq_official_enabled", True):
+            logger.info(
+                "[%s] QQ官方平台适配已关闭（qq_official_enabled=False），按原平台行为运行",
+                DISPLAY_NAME,
+            )
+            return
         try:
             platform_id = str(event.get_platform_id() or "")
             inst = self._platform_inst_by_id(platform_id)
+            scene = scene_of_event(event)
+            admins = self._admin_ids()
+            qq_admins = set(getattr(self, "qq_official_admin_openids", set()) or set())
+            openid_admins = {
+                item for item in admins if item and not str(item).isdigit()
+            }
             logger.info(
-                "[%s] QQ官方平台适配生效：平台=%s(%s) 内容模式=%s 最多气泡=%s 窗口=%ss 群主动=%s 清洗@标记=%s",
+                "[%s] QQ官方平台适配生效：平台=%s(%s) scene=%s 内容模式=%s 群主动=%s 清洗@标记=%s 文本上限=%s 转发展开=%s 管理员=%d",
                 DISPLAY_NAME,
                 platform_id,
                 platform_name_of_inst(inst) if inst is not None else "unknown",
+                scene,
                 getattr(self, "qq_official_content_mode", True),
-                getattr(self, "qq_official_max_bubbles", 4),
-                getattr(self, "qq_official_passive_window_seconds", 240),
                 getattr(self, "qq_official_group_proactive", False),
                 getattr(self, "qq_official_strip_at_markup", True),
+                getattr(self, "qq_official_text_chars", 2000),
+                getattr(self, "qq_official_flatten_forward", True),
+                len(admins),
+            )
+            if inst is None:
+                logger.warning(
+                    "[%s] QQ官方平台实例未找到（platform_id=%s），适配参数无法完全生效",
+                    DISPLAY_NAME,
+                    platform_id,
+                )
+            sender_id = str(event.get_sender_id() or "")
+            if not qq_admins and not openid_admins:
+                logger.warning(
+                    "[%s] QQ官方尚未配置管理员 openid：sender=%s；请在插件配置 qq_official_admin_openids 或 AstrBot admins_id 中填写 openid，否则速览工具、主动私聊、自醒会被拒绝（数字 QQ 号不会匹配 openid）。",
+                    DISPLAY_NAME,
+                    sender_id or "?",
+                )
+            logger.info(
+                "[%s] QQ官方能力边界：%s",
+                DISPLAY_NAME,
+                platform_capability_note(),
+            )
+            logger.info(
+                "[%s] QQ官方标识示例：群=%s:GroupMessage:<群openid> 私聊=%s:FriendMessage:<用户openid>",
+                DISPLAY_NAME,
+                platform_id,
+                platform_id,
             )
         except Exception as exc:
             logger.debug("[%s] QQ官方平台状态日志失败: %s", DISPLAY_NAME, exc)
+
+    def _qq_official_quote_is_bot(self, event: AstrMessageEvent) -> bool:
+        """判断这条 QQ 官方消息引用的对象是不是机器人自己。
+
+        QQ 官方入站 Reply 没有 sender_id；如果只看“存在 Reply”就唤醒，群里
+        引用任何第三方消息都会触发机器人抢话。这里用速览库里机器人自己的
+        最近发言文本做一次轻量比对；匹配不到就只当上下文，不唤醒。
+        """
+        try:
+            replies = [
+                comp
+                for comp in self._extract_components(event)
+                if type(comp).__name__ == "Reply"
+            ]
+        except Exception:
+            return False
+        if not replies:
+            return False
+        self_id = str(event.get_self_id() or "")
+        session = self._activity_session_of(event)
+        recent_bot_texts: list[str] = []
+        if session is not None:
+            try:
+                platform_id = str(event.get_platform_id() or "").strip()
+                kind, conversation_id, _name, _sender = session
+                conn = self._get_activity_db()
+                with self._activity_db_lock:
+                    rows = conn.execute(
+                        """
+                        SELECT text FROM activity_messages
+                        WHERE platform_id = ? AND kind = ? AND conversation_id = ?
+                          AND sender_id = 'bot'
+                        ORDER BY id DESC LIMIT 20
+                        """,
+                        (platform_id, kind, conversation_id),
+                    ).fetchall()
+                for row in rows:
+                    text = re.sub(r"\s+", "", str(row[0] or ""))
+                    if text:
+                        recent_bot_texts.append(text)
+            except Exception:
+                recent_bot_texts = []
+        for reply in replies:
+            sender_id = str(getattr(reply, "sender_id", "") or "")
+            if sender_id and self_id and sender_id == self_id:
+                return True
+            quoted = str(getattr(reply, "message_str", "") or "").strip()
+            if not quoted:
+                quoted = "".join(
+                    str(getattr(comp, "text", "") or "")
+                    for comp in (getattr(reply, "chain", None) or [])
+                    if type(comp).__name__ == "Plain"
+                ).strip()
+            if not quoted or not recent_bot_texts:
+                continue
+            quoted_norm = re.sub(r"\s+", "", quoted)
+            for bot_text in recent_bot_texts:
+                if (
+                    quoted_norm == bot_text
+                    or quoted_norm.startswith(bot_text)
+                    or bot_text.startswith(quoted_norm)
+                ):
+                    return True
+                if (
+                    len(quoted_norm) >= 20
+                    and len(bot_text) >= 20
+                    and (quoted_norm[:60] in bot_text or bot_text[:60] in quoted_norm)
+                ):
+                    return True
+        return False
+
+    @filter.event_message_type(EventMessageType.ALL, priority=20000)
+    async def _prepare_qq_official_event(self, event: AstrMessageEvent) -> None:
+        """QQ 官方入站归一化：清占位 At、@ 标记，识别引用唤醒并安装发送观察。
+
+        这个 handler 比速览采集（11000）、OutputPro（1000）和 on_message（10000）
+        都早，保证后续插件看到的是干净的消息链；同时尽早包装 event.send，
+        让 OutputPro 等前置发送也走统一出站管线。
+        """
+        if (
+            not self.enabled
+            or not is_qq_official(event)
+            or not getattr(self, "qq_official_enabled", True)
+        ):
+            return
+        outputpro_split.enable_qq_official()
+        scene = scene_of_event(event)
+        event.set_extra(QQ_SCENE_EXTRA, scene)
+        strip_markup = bool(getattr(self, "qq_official_strip_at_markup", True))
+        try:
+            components = self._extract_components(event)
+            cleaned, dropped = normalize_inbound_components(
+                components, event=event, strip_markup=strip_markup
+            )
+            if dropped or cleaned != components:
+                message_obj = getattr(event, "message_obj", None)
+                if message_obj is not None:
+                    try:
+                        message_obj.message = cleaned
+                    except Exception:
+                        pass
+                if dropped:
+                    logger.debug(
+                        "[%s] QQ官方入站清理：scene=%s 丢弃占位组件=%d",
+                        DISPLAY_NAME,
+                        scene,
+                        dropped,
+                    )
+            if strip_markup:
+                raw_text = str(getattr(event, "message_str", "") or "")
+                cleaned_text = clean_platform_text(event, raw_text, True)
+                if cleaned_text != raw_text:
+                    event.message_str = cleaned_text
+                    message_obj = getattr(event, "message_obj", None)
+                    if message_obj is not None:
+                        try:
+                            message_obj.message_str = cleaned_text
+                        except Exception:
+                            pass
+        except Exception as exc:
+            logger.debug("[%s] QQ官方入站归一化失败: %s", DISPLAY_NAME, exc)
+
+        if scene == "channel":
+            event.is_at_or_wake_command = True
+            event.is_wake = True
+        elif (
+            scene == "group"
+            and bool(getattr(self, "qq_official_quote_trigger", True))
+            and not getattr(event, "is_at_or_wake_command", False)
+            and self._qq_official_quote_is_bot(event)
+        ):
+            event.is_at_or_wake_command = True
+            event.is_wake = True
+            logger.info(
+                "[%s] QQ官方引用消息触发对话：session=%s sender=%s",
+                DISPLAY_NAME,
+                str(getattr(event, "unified_msg_origin", "") or ""),
+                str(event.get_sender_id() or ""),
+            )
+
+        self._ensure_send_observer(event)
+        self._maybe_log_qq_official_state(event)
 
     @filter.event_message_type(EventMessageType.ALL, priority=10000)
     async def on_message(self, event: AstrMessageEvent) -> Any:
@@ -1678,17 +1726,6 @@ class NuoxiaomiaoPlugin(Star):
                 sender_id,
             )
             return
-
-        # 拟人回复打断：收到新消息立刻打断进行中的回合——
-        # LLM 还在生成的直接停掉；打字任务只在还没开口（第一条气泡
-        # 没发到 QQ）时掐掉，开口了就让这轮说完，新消息排队下一轮。
-        if self._human_reply_scope_applies(event) and self.human_reply_interrupt_enabled:
-            self._interrupt_human_reply(
-                str(event.unified_msg_origin), sender_id
-            )
-            self._abort_inflight_turn(
-                str(event.unified_msg_origin), sender_id
-            )
 
         # 指令由原 handler 立即处理，不参与合并或连刷计数。
         is_command = self._is_command_event(event)
@@ -2032,7 +2069,30 @@ class NuoxiaomiaoPlugin(Star):
             # 自醒轮不抢主脑锁（它在自己的会话里思考，写完小结才排队写回）。
             return
         await self.resident.master.maybe_auto_bind(event)
-        if await self.resident.master.acquire_brain():
+        if not self.shared_memory_enabled:
+            return
+        held = False
+        try:
+            held = await asyncio.wait_for(
+                self.resident.master.acquire_brain(),
+                timeout=BRAIN_LOCK_WAIT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            event.set_extra(NO_BRAIN_EXTRA, True)
+            self._warn_limited(
+                "brain_lock_timeout",
+                "[%s] 等待主脑锁超过 %.0f 秒，本轮不绑定共享记忆",
+                DISPLAY_NAME,
+                BRAIN_LOCK_WAIT_SECONDS,
+            )
+            return
+        except asyncio.CancelledError:
+            self.resident.master.release_brain()
+            raise
+        except Exception:
+            self.resident.master.release_brain()
+            return
+        if held:
             task = asyncio.current_task()
             if task is not None:
                 task.add_done_callback(
@@ -2079,20 +2139,7 @@ class NuoxiaomiaoPlugin(Star):
         # 请求将继续下发，按需覆盖 AstrBot 写死的工具调用提示词。
         self._maybe_override_tool_call_prompt(req)
 
-        # 在飞请求登记：同会话该用户再来新消息时立刻 stop 掉本轮
-        # （打断模型阶段2：已请求未回复完毕），新消息攒批重新起一轮，
-        # 历史里没答上的用户消息自然由新一轮一并回答。
         self._ensure_send_observer(event)
-        if self._human_reply_scope_applies(event) and self.human_reply_interrupt_enabled:
-            inflight_sender = str(event.get_sender_id() or "").strip()
-            if inflight_sender:
-                self._turn_inflight[
-                    self._merge_key(str(event.unified_msg_origin), inflight_sender)
-                ] = event
-
-        # 拟人回复被打断的收尾：告诉模型上一条只发出去一部分，
-        # 免得它对着没发出去的内容继续接话。
-        self._maybe_inject_interrupt_note(event, req)
 
         # 用一小段“能力索引”告诉模型可以做什么，细节都在工具说明里。
         # 仅在本轮真的带工具时注入，避免空占主模型注意力。
@@ -2107,20 +2154,24 @@ class NuoxiaomiaoPlugin(Star):
         self.resident.inbox.request_ids(event)
 
         # 点名通知卡（可选）：@/关键词唤醒时注入未读情况与最近消息，
-        # 并把当前会话整体标记已读；同时后台刷新一次话题概括。
+        # 只把卡片展示过的几条标为已读（当前这条本身不算未读）；同时后台刷新话题概括。
         if self.mention_notice_enabled and getattr(
             event, "is_at_or_wake_command", False
         ):
             try:
                 persona, _ = await self.resident.persona.resolve(event)
-                notice = await self.resident.inbox.notice(event, persona)
-                if notice:
-                    self._append_temp_context(req, notice)
-                    current = self._current_conversation(event)
-                    if current is not None:
-                        self.resident.inbox.mark_channel(persona, current)
+                exclude_ids = self._inbox_ids_of(event)
+                notice_text, shown_ids = await self.resident.inbox.notice(
+                    event, persona, exclude_ids=exclude_ids
+                )
+                if notice_text:
+                    self._append_temp_context(req, notice_text)
+                if shown_ids:
+                    self.resident.inbox.mark(persona, shown_ids)
             except Exception as exc:
-                logger.debug("[%s] 注入点名通知失败: %s", DISPLAY_NAME, exc)
+                self._warn_limited(
+                    "notice_inject", "[%s] 注入点名通知失败: %s", DISPLAY_NAME, exc
+                )
         umo = str(event.unified_msg_origin or "")
         if umo:
             await self.resident.topic.maybe_summarize(umo)
@@ -2159,7 +2210,14 @@ class NuoxiaomiaoPlugin(Star):
         if self.enabled:
             await self.resident.inbox.consumed(event, response)
         # 模型完成不代表消息已送达；由发送观察器记录真正成功的消息。
-        self._ensure_send_observer(event)
+        observed = self._ensure_send_observer(event)
+        if isinstance(observed, dict) and response is not None:
+            if getattr(response, "role", "") != "err":
+                completion_text = str(
+                    getattr(response, "completion_text", "") or ""
+                ).strip()
+                if completion_text:
+                    observed["llm_text"] = completion_text
         if self._is_poke_event(event):
             return
         session_key = str(getattr(event, "unified_msg_origin", "") or "")
@@ -2172,52 +2230,185 @@ class NuoxiaomiaoPlugin(Star):
             await self._cleanup_localized_files(
                 self._localized_composite(merge_key, epoch)
             )
-            # 回复已生成：在飞登记解除（后续进入打字阶段的打断另走打字打断）。
-            if self._turn_inflight.get(merge_key) is event:
-                self._turn_inflight.pop(merge_key, None)
         # 顺带兜底清理过期文件，防止某些会话的 on_llm_response 遗漏。
         await self._cleanup_expired_localized_files()
 
-    # ------------------------------------------------------------------
-    # 拟人回复：像人一样按打字速度逐条说，来新消息就打断重来
-    # ------------------------------------------------------------------
+    @staticmethod
+    def _derive_chain(source: Any, components: list[Any]) -> Any:
+        """基于原消息链派生一条新链，保留 use_markdown_/type 等元数据。"""
+        derive = getattr(source, "derive", None)
+        if callable(derive):
+            try:
+                return derive(list(components))
+            except Exception:
+                pass
+        return MessageChain(list(components))
 
-    def _human_reply_scope_applies(self, event: AstrMessageEvent) -> bool:
-        """发送接管和请求打断共用范围，避免名单外的正常回复被取消。"""
-        if not self.enabled or not self.human_reply_enabled:
-            return False
-        if self._is_self_wake_event(event):
-            return False
+    def _prepare_qq_official_outbound(
+        self, event: AstrMessageEvent, message: Any
+    ) -> list[Any] | None:
+        """把一条出站链清洗并拆成 QQ 官方能发送的若干条链。
+
+        返回 None 表示不是 QQ 官方/适配关闭，调用方走原逻辑；返回 [] 表示
+        清洗后没有可发送内容（例如只有占位 At），调用方应视为失败而不是成功。
+        """
+        if not is_qq_official(event) or not getattr(
+            self, "qq_official_enabled", True
+        ):
+            return None
+        chain = list(getattr(message, "chain", None) or [])
+        if not chain:
+            return []
+        sender_id = str(event.get_sender_id() or "").strip()
+        sender_name = str(event.get_sender_name() or "").strip()
+        logger.debug(
+            "[%s] QQ官方出站链: types=%s sender=%s name=%s preview=%s",
+            DISPLAY_NAME,
+            [type(comp).__name__ for comp in chain],
+            sender_id,
+            sender_name,
+            " / ".join(
+                str(getattr(comp, "text", "") or "")[:40]
+                for comp in chain
+                if type(comp).__name__ == "Plain"
+            ),
+        )
+        content_mode = bool(getattr(self, "qq_official_content_mode", True))
+        flatten_forward = bool(getattr(self, "qq_official_flatten_forward", True))
+        strip_markup = bool(getattr(self, "qq_official_strip_at_markup", True))
+        cleaned, info = normalize_outbound_components(
+            chain,
+            event=event,
+            content_mode=content_mode,
+            flatten_forward=flatten_forward,
+            inbound_message_id=self._message_id(event),
+            strip_markup=strip_markup,
+        )
+        if info.get("dropped") or info.get("flattened"):
+            logger.debug(
+                "[%s] QQ官方出站清洗: dropped=%s flattened=%s types=%s",
+                DISPLAY_NAME,
+                info.get("dropped"),
+                info.get("flattened"),
+                info.get("dropped_types"),
+            )
+        if not cleaned:
+            return []
+
+        from astrbot.core.message.components import Plain
+
+        limit = int(getattr(self, "qq_official_text_chars", 2000) or 0)
+        plain = [comp for comp in cleaned if type(comp).__name__ == "Plain"]
+        text = "".join(str(getattr(comp, "text", "") or "") for comp in plain)
+        shared = [comp for comp in cleaned if type(comp).__name__ != "Plain"]
+        media = any(
+            type(comp).__name__ not in frozenset({"At", "Reply", "Plain"})
+            for comp in cleaned
+        )
+        chains: list[Any] = []
+        if limit > 0 and text and len(text) > limit and not media:
+            chunks = split_text_for_limit(text, limit)
+            for index, chunk in enumerate(chunks):
+                components = (list(shared) if index == 0 else []) + [Plain(chunk)]
+                if not components:
+                    continue
+                item = self._derive_chain(message, components)
+                if content_mode:
+                    apply_content_mode(item, True)
+                chains.append(item)
+        else:
+            filtered = [
+                comp
+                for comp in cleaned
+                if not (
+                    type(comp).__name__ == "Plain"
+                    and not str(getattr(comp, "text", "") or "").strip()
+                )
+            ]
+            if not filtered:
+                return []
+            item = self._derive_chain(message, filtered)
+            if content_mode:
+                apply_content_mode(item, True)
+            chains.append(item)
+        return chains
+
+    def _note_qq_passive_sends(self, event: AstrMessageEvent, count: int) -> None:
+        """记录同一入站 msg_id 下已发出的被动回复条数；超保守上限只告警。"""
+        if count <= 0:
+            return
         try:
-            if str(event.get_platform_name() or "") == "webchat":
-                return False
-            if not self._event_group_allowed(
-                event, self.human_reply_group_whitelist, self.human_reply_group_blacklist
+            total = int(event.get_extra(QQ_PASSIVE_SENDS_EXTRA) or 0) + max(0, int(count))
+            event.set_extra(QQ_PASSIVE_SENDS_EXTRA, total)
+            if total > QQ_OFFICIAL_PASSIVE_REPLY_LIMIT and not event.get_extra(
+                "nuoxiaomiao_qq_passive_warned"
             ):
-                return False
-            cfg = self.context.get_config(str(event.unified_msg_origin))
-            if isinstance(cfg, dict) and (cfg.get("provider_settings", {}) or {}).get(
-                "streaming_response", False
-            ):
-                return False
+                event.set_extra("nuoxiaomiao_qq_passive_warned", True)
+                logger.warning(
+                    "[%s] QQ官方同一 msg_id 已发 %d 条被动回复（保守上限 %d），超出后适配器会改走主动消息并消耗主动配额；请减少单轮分段条数。",
+                    DISPLAY_NAME,
+                    total,
+                    QQ_OFFICIAL_PASSIVE_REPLY_LIMIT,
+                )
         except Exception:
-            # 老版上下文无法读取流式设置时，发送出口仍检查结果类型。
             pass
-        result = event.get_result()
-        content_type = getattr(result, "result_content_type", None)
-        return not (content_type is not None and "STREAMING" in str(content_type))
+
+    async def _qq_official_send(self, event: AstrMessageEvent, message: Any) -> bool:
+        """发送并尽量判断 QQ 官方是否真的发出去了。
+
+        适配器 event.send 成功/静默丢弃都返回 None；唯一的可拦截静默路径是
+        raw_message 不是 botpy 消息对象。其余失败会抛异常。返回 False 时调用方
+        必须回滚 sent_count / 不记速览。被动发送失败时适配器会去掉 msg_id 改走
+        主动消息（需平台权限/配额），插件只做正确失败反馈。
+        """
+        qq_platform = is_qq_official(event) and bool(
+            getattr(self, "qq_official_enabled", True)
+        )
+        if qq_platform:
+            raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+            if not is_supported_raw_message(raw):
+                logger.warning(
+                    "[%s] QQ官方消息源不可发送（raw_message=%s），已阻止静默丢弃: session=%s",
+                    DISPLAY_NAME,
+                    type(raw).__name__,
+                    str(getattr(event, "unified_msg_origin", "") or ""),
+                )
+                return False
+            chain = list(getattr(message, "chain", None) or [])
+            if not chain:
+                return False
+        try:
+            result = await event.send(message)
+        except Exception as exc:
+            logger.warning("[%s] QQ官方发送失败: %s", DISPLAY_NAME, exc)
+            return False
+        return result is not False
 
     def _ensure_send_observer(self, event: AstrMessageEvent) -> dict[str, Any] | None:
-        """仅包装本轮 event.send：观察前置发送，并在成功后记录实际文本。"""
+        """包装本轮 event.send：观察前置发送，并在成功后记录实际文本。
+
+        QQ 官方事件会额外经过出站清洗/纯文本/分段管线；OutputPro 等前置插件
+        在 priority 15 之前发送的每一段也会被覆盖。
+        """
         if not self.enabled or self._is_self_wake_event(event):
             return None
+        if is_qq_official(event) and getattr(self, "qq_official_enabled", True):
+            outputpro_split.enable_qq_official()
         observed = event.get_extra(SEND_OBSERVER_EXTRA)
         if isinstance(observed, dict):
             return observed
         original_send = getattr(event, "send", None)
         if not callable(original_send):
             return None
-        observed = {"attempted": 0, "succeeded": 0, "active": True}
+        observed = {
+            "attempted": 0,
+            "succeeded": 0,
+            "active": True,
+            "round_lease": None,
+            "round_lease_attempted": False,
+            "llm_text": "",
+            "recorded_text": False,
+        }
 
         async def send_observed(message: Any, *args: Any, **kwargs: Any) -> Any:
             chain = list(getattr(message, "chain", None) or [])
@@ -2232,24 +2423,122 @@ class NuoxiaomiaoPlugin(Star):
 
                     synthetic_id = self._message_id(event)
                     safe_chain = [
-                        comp for comp in chain
+                        comp
+                        for comp in chain
                         if not (isinstance(comp, Reply) and str(comp.id) == synthetic_id)
                     ]
                     if len(safe_chain) != len(chain):
-                        derive = getattr(message, "derive", None)
-                        message = derive(safe_chain) if callable(derive) else MessageChain(safe_chain)
+                        message = self._derive_chain(message, safe_chain)
                         chain = safe_chain
-            result = await original_send(message, *args, **kwargs)
-            if observed["active"] and trackable and chain and result is not False:
-                observed["succeeded"] += 1
-                self._record_bot_reply(event, self._sent_text_from_chain(chain))
-            return result
+
+            umo = str(getattr(event, "unified_msg_origin", "") or "")
+            fresh_lease_miss = False
+            if observed["active"] and trackable and not observed.get("round_lease_attempted"):
+                observed["round_lease_attempted"] = True
+                observed["round_lease"] = await self._send_order.acquire_round(
+                    umo, event=event, timeout=OBSERVER_WAIT_SECONDS
+                )
+                if observed.get("round_lease") is None:
+                    fresh_lease_miss = True
+
+            if observed.get("round_lease") is not None:
+                return await self._dispatch_send(
+                    event,
+                    message,
+                    chain,
+                    trackable,
+                    observed,
+                    original_send,
+                    args,
+                    kwargs,
+                )
+
+            if self._send_order.is_astrna_backend() or not fresh_lease_miss:
+                async with self._send_order.hold(
+                    umo, event=event, timeout=OBSERVER_WAIT_SECONDS
+                ):
+                    return await self._dispatch_send(
+                        event,
+                        message,
+                        chain,
+                        trackable,
+                        observed,
+                        original_send,
+                        args,
+                        kwargs,
+                    )
+            return await self._dispatch_send(
+                event,
+                message,
+                chain,
+                trackable,
+                observed,
+                original_send,
+                args,
+                kwargs,
+            )
 
         observed["original"] = original_send
         observed["wrapper"] = send_observed
         event.send = send_observed
         event.set_extra(SEND_OBSERVER_EXTRA, observed)
         return observed
+
+    async def _dispatch_send(
+        self,
+        event: AstrMessageEvent,
+        message: Any,
+        chain: list[Any],
+        trackable: bool,
+        observed: dict[str, Any],
+        original_send: Any,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> Any:
+        """真正投递一条出站链：QQ 官方走统一清洗/分段管线，其余平台原样发送。"""
+        if is_qq_official(event) and getattr(self, "qq_official_enabled", True):
+            raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+            if not is_supported_raw_message(raw):
+                logger.warning(
+                    "[%s] QQ官方消息源不可发送（raw_message=%s），已阻止静默丢弃: session=%s",
+                    DISPLAY_NAME,
+                    type(raw).__name__,
+                    str(getattr(event, "unified_msg_origin", "") or ""),
+                )
+                return False
+        prepared = self._prepare_qq_official_outbound(event, message)
+        if prepared is not None:
+            if not prepared:
+                return False
+            sent_texts: list[str] = []
+            sent_count = 0
+            try:
+                for item in prepared:
+                    delivered = await original_send(item, *args, **kwargs)
+                    if delivered is False:
+                        return False
+                    sent_count += 1
+                    item_chain = list(getattr(item, "chain", None) or [])
+                    sent_texts.append(self._sent_text_from_chain(item_chain))
+            finally:
+                if sent_count > 0:
+                    self._note_qq_passive_sends(event, sent_count)
+                if observed["active"] and trackable and sent_count > 0:
+                    observed["succeeded"] += 1
+                    text = "\n".join(part for part in sent_texts if part)
+                    if text:
+                        observed["recorded_text"] = True
+                        self._record_bot_reply(event, text)
+            return True
+
+        delivered = await original_send(message, *args, **kwargs)
+        if observed["active"] and trackable and chain and delivered is not False:
+            observed["succeeded"] += 1
+            text = self._sent_text_from_chain(chain)
+            if text:
+                observed["recorded_text"] = True
+                self._record_bot_reply(event, text)
+        return delivered
 
     @staticmethod
     def _sent_text_from_chain(chain: list[Any]) -> str:
@@ -2273,6 +2562,17 @@ class NuoxiaomiaoPlugin(Star):
     def _finish_send_observer(self, event: AstrMessageEvent) -> None:
         observed = event.get_extra(SEND_OBSERVER_EXTRA)
         if isinstance(observed, dict):
+            if (
+                observed.get("succeeded", 0) > 0
+                and not observed.get("recorded_text")
+                and observed.get("llm_text")
+            ):
+                observed["recorded_text"] = True
+                self._record_bot_reply(event, observed["llm_text"])
+                observed["llm_text"] = ""
+            lease = observed.pop("round_lease", None)
+            if lease is not None:
+                self._send_order.release_round(lease)
             observed["active"] = False
             if getattr(event, "send", None) is observed.get("wrapper"):
                 event.send = observed["original"]
@@ -2291,8 +2591,8 @@ class NuoxiaomiaoPlugin(Star):
         """QQ 官方：把最终回复链标成纯文本，避开群内 markdown 权限限制。
 
         QQ 官方 event.send 在 use_markdown_ 为 None 时默认发 markdown（msg_type=2）；
-        群里没有 markdown 权限时适配器会先去掉 msg_id 重试（变成主动消息）再回退，
-        既浪费主动消息配额又可能整条失败。这里在发送前统一声明纯文本。
+        群里没有 markdown 权限时适配器会先去掉 msg_id 重试（变成主动消息），
+        既消耗主动消息配额又可能在配额不足时失败。这里在发送前统一声明纯文本。
         """
         try:
             if not getattr(self, "qq_official_enabled", True):
@@ -2308,449 +2608,16 @@ class NuoxiaomiaoPlugin(Star):
         except Exception as exc:
             logger.debug("[%s] QQ官方纯文本模式标记失败: %s", DISPLAY_NAME, exc)
 
+    @filter.on_decorating_result(priority=QQ_OFFICIAL_CONTENT_MODE_FALLBACK_PRIORITY)
+    async def qq_official_force_content_mode_late(
+        self, event: AstrMessageEvent
+    ) -> None:
+        """后置兜底：覆盖在 priority 17 之后才改写结果链的插件。"""
+        await self.qq_official_force_content_mode(event)
+
     @filter.after_message_sent()
     async def after_reply_sent(self, event: AstrMessageEvent) -> None:
         self._finish_send_observer(event)
-
-    @filter.on_decorating_result(priority=HUMAN_REPLY_DECORATE_PRIORITY)
-    async def on_decorating_result(self, event: AstrMessageEvent) -> None:
-        """前置输出处理完成后，仅接管本轮尚未发送的纯文本。"""
-        if not self._human_reply_scope_applies(event):
-            return
-        if self._is_self_wake_event(event):
-            # 自醒独白/主动消息不慢慢打字，该发就发。
-            return
-        if str(event.get_platform_name() or "") == "webchat":
-            return
-        sender_id = str(event.get_sender_id() or "").strip()
-        if not sender_id:
-            return
-        # 群聊黑白名单：名单外的群不接管，回复走原管线。
-        if not self._event_group_allowed(
-            event,
-            self.human_reply_group_whitelist,
-            self.human_reply_group_blacklist,
-        ):
-            return
-        result = event.get_result()
-        if result is None or not getattr(result, "chain", None):
-            return
-        result_content_type = getattr(result, "result_content_type", None)
-        if result_content_type is not None and str(result_content_type).endswith(
-            "STREAMING_RESULT"
-        ):
-            # 流式输出已经边生成边发了，接管只会重复发送。
-            return
-        if not result.is_llm_result():
-            return
-
-        observed = self._ensure_send_observer(event)
-        if event.is_stopped() or (observed and observed["attempted"]):
-            # OutputPro split 会发送前几段、留下最后一段；尾段交给核心。
-            return
-
-        from astrbot.core.message.components import At, Plain, Reply
-
-        prefix: list[Any] = []
-        texts: list[str] = []
-        for component in result.chain:
-            if isinstance(component, Plain):
-                if not texts and not re.sub(r"[\s\u200b-\u200d\u2060\ufeff]", "", component.text or ""):
-                    # OutputPro 的 @ 后带零宽分隔符，随首条正文发送，不能单独成泡。
-                    if prefix and component.text:
-                        prefix.append(component)
-                    continue
-                if component.text:
-                    texts.append(component.text)
-                continue
-            if isinstance(component, (At, Reply)) and not texts:
-                # @/引用头保留在第一条气泡前面。
-                prefix.append(component)
-                continue
-            # 带图片/文件等内容的回复不接管，走原管线（含 OutputPro）。
-            return
-        # QQ 官方：@/引用头里的占位或数字 QQ 目标清掉，避免发成非法标记。
-        if is_qq_official(event):
-            prefix = sanitize_outbound_components(prefix, event)
-        text = "\n".join(texts).strip()
-        if not text:
-            return
-        if self.human_reply_max_length > 0 and len(text) > self.human_reply_max_length:
-            return
-        segments = _split_reply_text(text)
-        if not segments:
-            return
-
-        key = self._merge_key(str(event.unified_msg_origin), sender_id)
-        # 接管：清空结果链让下游全部让路，自己按打字节奏发。
-        event.clear_result()
-        event.set_extra("_streaming_finished", True)
-        logger.info(
-            "[%s] human reply takeover: key=%s bubbles=%d len=%d",
-            DISPLAY_NAME,
-            key,
-            len(segments),
-            len(text),
-        )
-        self._spawn_human_reply(event, prefix, segments, key)
-
-    def _spawn_human_reply(
-        self,
-        event: AstrMessageEvent,
-        prefix: list[Any],
-        segments: list[str],
-        key: str,
-    ) -> None:
-        state = HumanReplyState(
-            total=len(segments),
-            umo=str(getattr(event, "unified_msg_origin", "") or ""),
-            segments=list(segments),
-        )
-        self._human_reply_tasks.setdefault(key, []).append(state)
-        task = asyncio.create_task(
-            self._run_human_reply(event, prefix, segments, key, state)
-        )
-        state.task = task
-
-    async def _run_human_reply(
-        self,
-        event: AstrMessageEvent,
-        prefix: list[Any],
-        segments: list[str],
-        key: str,
-        state: HumanReplyState,
-    ) -> None:
-        from astrbot.core.message.components import Plain
-
-        lock = self._human_reply_locks.get(key)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._human_reply_locks[key] = lock
-        # QQ 官方：被动回复复用入站 msg_id，平台侧有 5 分钟窗口与条数限制。
-        # 气泡压到配置上限；打字等待超出窗口预算后剩余内容立即一次发完，
-        # 避免「前几条发出去了、后面的全部超窗失败」。
-        qq_platform = is_qq_official(event) and bool(
-            getattr(self, "qq_official_enabled", True)
-        )
-        qq_content_mode = qq_platform and bool(
-            getattr(self, "qq_official_content_mode", True)
-        )
-        qq_window = float(
-            getattr(self, "qq_official_passive_window_seconds", 240) or 240
-        )
-        if qq_platform:
-            capped = plan_bubbles(
-                list(segments),
-                int(getattr(self, "qq_official_max_bubbles", 4) or 0),
-                str(getattr(self, "merge_join_separator", "\n") or "\n"),
-            )
-            if len(capped) != len(segments):
-                logger.info(
-                    "[%s] QQ官方分条压到 %d 条（原 %d 条，被动回复窗口限制）: key=%s",
-                    DISPLAY_NAME,
-                    len(capped),
-                    len(segments),
-                    key,
-                )
-            segments = capped
-            state.segments = list(segments)
-            state.total = len(segments)
-        state.started_at = time.monotonic()
-        try:
-            # 同一会话的回复排队逐条说：上一条没打完，下一条先等锁，
-            # 否则并发任务（如 AstrNa 并发回复、连着几轮快速问答）的
-            # 气泡会按各自的打字计时交叉乱序。asyncio.Lock 唤醒按先来后到。
-            async with lock:
-                for index, segment in enumerate(segments):
-                    delay = self._human_reply_delay(segment)
-                    if qq_platform and state.started_at:
-                        elapsed = time.monotonic() - state.started_at
-                        if elapsed + delay > qq_window:
-                            # 窗口预算不够了：这条起不再模拟打字，立即发。
-                            delay = 0.0
-                    if not await self._human_typing_wait(event, state, delay):
-                        await self._send_human_typing_status(event, active=False)
-                        logger.info(
-                            "[%s] human reply interrupted: key=%s sent=%d/%d",
-                            DISPLAY_NAME,
-                            key,
-                            state.sent_count,
-                            state.total,
-                        )
-                        return
-                    chain = list(prefix) if index == 0 else []
-                    chain.append(Plain(segment))
-                    outgoing = MessageChain(chain)
-                    if qq_content_mode:
-                        # QQ 官方群里没有 markdown 权限时，适配器会先去 msg_id
-                        # 重试（变主动消息）再回退；直接声明纯文本可绕开。
-                        apply_content_mode(outgoing, True)
-                    # 乐观预增：气泡开始投递即视为「已开口」，打断时不能把
-                    # 正在发出的一条也记成用户没看到（审查 H2 竞态）。
-                    state.sent_count += 1
-                    try:
-                        delivered = await event.send(outgoing)
-                        if delivered is False:
-                            raise RuntimeError("平台返回发送失败")
-                    except Exception as exc:
-                        state.sent_count -= 1  # 发送失败回滚预增
-                        logger.warning(
-                            "[%s] human reply bubble failed: %s",
-                            DISPLAY_NAME,
-                            exc,
-                        )
-                        # 气泡发送失败也是「用户没看到全部」，同样要记账。
-                        self._merge_unseen_note(state)
-                        return
-                await self._send_human_typing_status(event, active=False)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            # 拟人回复只是输出形态，失败也不能吞掉错误线索。
-            logger.warning(
-                "[%s] human reply task failed: %s",
-                DISPLAY_NAME,
-                exc,
-                exc_info=True,
-            )
-            self._merge_unseen_note(state)
-        finally:
-            self._finish_send_observer(event)
-            states = self._human_reply_tasks.get(key)
-            if states is not None:
-                try:
-                    states.remove(state)
-                except ValueError:
-                    pass
-                if not states:
-                    self._human_reply_tasks.pop(key, None)
-                    # 没有打字中也没有排队的任务了，锁一并撤掉：
-                    # 还在等锁的任务必然还登记在列表里，不会被丢下。
-                    self._human_reply_locks.pop(key, None)
-
-    def _human_reply_delay(self, segment: str) -> float:
-        """按字数算这条气泡的打字时间：len / 每分钟字数 * 60 秒。"""
-        cpm = max(1, self.human_reply_chars_per_minute)
-        return min(
-            len(segment) / cpm * 60.0,
-            self.human_reply_max_wait_seconds,
-        )
-
-    async def _human_typing_wait(
-        self,
-        event: AstrMessageEvent,
-        state: HumanReplyState,
-        delay: float,
-    ) -> bool:
-        """打字等待：分片睡，期间持续显示「正在输入」。
-
-        返回 False 表示被用户新消息打断，剩余气泡不再发送。
-        """
-        if state.interrupted:
-            return False
-        if delay <= 0:
-            return True
-        await self._send_human_typing_status(event, active=True)
-        last_refresh = time.monotonic()
-        remaining = delay
-        while remaining > 0:
-            slice_seconds = min(HUMAN_REPLY_TYPING_SLICE_SECONDS, remaining)
-            await asyncio.sleep(slice_seconds)
-            remaining -= slice_seconds
-            if state.interrupted:
-                return False
-            now = time.monotonic()
-            if (
-                self.human_reply_show_input_status
-                and now - last_refresh >= HUMAN_REPLY_TYPING_REFRESH_SECONDS
-            ):
-                await self._send_human_typing_status(event, active=True)
-                last_refresh = now
-        return True
-
-    async def _send_human_typing_status(
-        self, event: AstrMessageEvent, active: bool
-    ) -> None:
-        """尽力显示/隐藏「正在输入」；发不发得出来都不影响正文。"""
-        if not self.human_reply_show_input_status:
-            return
-        try:
-            platform = str(event.get_platform_name() or "")
-            if platform == "aiocqhttp" and not event.get_group_id():
-                # NapCat 扩展动作 set_input_status，仅私聊（C2C）可用。
-                bot = getattr(event, "bot", None)
-                api = getattr(bot, "api", None)
-                call_action = getattr(api, "call_action", None)
-                if callable(call_action):
-                    await asyncio.wait_for(
-                        call_action(
-                            "set_input_status",
-                            user_id=str(event.get_sender_id() or ""),
-                            event_type=1 if active else 2,
-                        ),
-                        timeout=HUMAN_REPLY_ACTION_TIMEOUT_SECONDS,
-                    )
-            elif active and platform in {"telegram", "weixin_oc"}:
-                send_typing = getattr(event, "send_typing", None)
-                if callable(send_typing):
-                    await asyncio.wait_for(
-                        send_typing(),
-                        timeout=HUMAN_REPLY_ACTION_TIMEOUT_SECONDS,
-                    )
-        except Exception:
-            # 「正在输入」只是气氛组，任何失败都静默。
-            logger.debug(
-                "[%s] typing status failed",
-                DISPLAY_NAME,
-                exc_info=True,
-            )
-
-    def _interrupt_human_reply(self, session_key: str, sender_id: str) -> bool:
-        """打断该会话还没开口（首条气泡未发）的打字/排队任务；返回是否打断了。
-
-        已经发出第一条气泡的回合不再打断：话已出口，让这一轮说完，
-        新消息走防抖排队下一轮（串行锁保证先后顺序）。
-        """
-        key = self._merge_key(session_key, sender_id)
-        states = list(self._human_reply_tasks.get(key) or [])
-        if not states:
-            return False
-        interrupted_any = False
-        for state in states:
-            if state.interrupted or state.sent_count > 0:
-                continue
-            state.interrupted = True
-            # 当场记账：插话的消息可能几毫秒后就触发下一轮 LLM 请求，
-            # 等打字任务自己（最迟 0.5 秒后）醒来再记就赶不上了。
-            self._merge_unseen_note(state)
-            interrupted_any = True
-        return interrupted_any
-
-    def _abort_inflight_turn(self, session_key: str, sender_id: str) -> bool:
-        """停掉该会话正在生成的 LLM 回合（打断模型阶段2）。
-
-        stop_event() 后核心的 stop 监视器会在 0.5 秒内中止本轮、不产生
-        回复；新消息攒批重新起一轮，没答上的话由新一轮一并回答。
-        """
-        key = self._merge_key(session_key, sender_id)
-        event = self._turn_inflight.get(key)
-        if event is None:
-            return False
-        if not self._human_reply_scope_applies(event):
-            return False
-        try:
-            if event.is_stopped():
-                return False
-            event.stop_event()
-            logger.info(
-                "[%s] in-flight turn aborted by new message: key=%s",
-                DISPLAY_NAME,
-                key,
-            )
-            return True
-        except Exception:
-            # 中止失败就让本轮自然跑完，不能影响新消息的接收。
-            logger.debug(
-                "[%s] abort in-flight turn failed",
-                DISPLAY_NAME,
-                exc_info=True,
-            )
-            return False
-
-    def _merge_unseen_note(self, state: HumanReplyState) -> None:
-        """把「用户没看到的部分」并入该会话的待提示账本。
-
-        记未送达的原文而不是条数：模型并不知道气泡是怎么拆的，
-        「前 N 条」对它没有意义；给它原文才不用它猜、不用它判断。
-        同一会话可能同时挂了几条被打断的回复（并发回复场景），
-        全部并进同一笔账，下一轮一次说清。
-        """
-        if not state.umo:
-            return
-        unseen = "\n".join(state.segments[state.sent_count :]).strip()
-        entry = self._human_reply_interrupt_notes.get(state.umo)
-        if entry is None:
-            entry = {"chunks": [], "seen_any": False, "expires": 0.0}
-            self._human_reply_interrupt_notes[state.umo] = entry
-        if unseen:
-            entry["chunks"].append(unseen)
-        entry["seen_any"] = bool(entry["seen_any"]) or state.sent_count > 0
-        entry["expires"] = time.time() + HUMAN_REPLY_NOTE_TTL_SECONDS
-
-    def _maybe_inject_interrupt_note(
-        self, event: AstrMessageEvent, req: ProviderRequest
-    ) -> None:
-        """被打断后的下一轮请求附上「用户没看到的内容」原文，模型不用自己判断。"""
-        umo = str(getattr(event, "unified_msg_origin", "") or "")
-        if not umo:
-            return
-        entry = self._human_reply_interrupt_notes.pop(umo, None)
-        if not entry:
-            return
-        if time.time() > float(entry.get("expires", 0.0) or 0.0):
-            return
-        chunks = [chunk for chunk in (entry.get("chunks") or []) if chunk]
-        seen_any = bool(entry.get("seen_any"))
-        if not chunks:
-            # 极端时序：所有气泡其实都发出去了，没什么可补的。
-            return
-        if not seen_any and len(chunks) == 1:
-            # 只有单独一条回复且一条气泡都没发出去：模型在历史里
-            # 能看到自己上一条完整说了什么，不用引用原文。
-            note = (
-                "[system] 你上一条回复因为用户插话没能发出去，用户没有看到。"
-                "上一条里如果有用户需要知道的信息（回答、结论、答应的事），"
-                "请在这次回复里换个说法说出来，不要默认用户已经知道，"
-                "然后回应用户的新消息。"
-            )
-        else:
-            quotes = "\n".join(
-                f"「{chunk if len(chunk) <= 200 else chunk[:200] + '……'}」"
-                for chunk in chunks
-            )
-            note = (
-                "[system] 你之前的回复因为用户插话没能发完，"
-                f"用户没有看到这些内容：\n{quotes}\n"
-                "这些内容里如果有用户需要知道的信息，请在这次回复里自然地补上，"
-                "已经看过的部分不要重复。"
-            )
-        req.system_prompt = (
-            f"{req.system_prompt}\n{note}" if req.system_prompt else note
-        )
-        logger.info(
-            "[%s] interrupted-reply note injected: umo=%s unseen_chunks=%d unseen_chars=%d",
-            DISPLAY_NAME,
-            umo,
-            len(chunks),
-            sum(len(chunk) for chunk in chunks),
-        )
-
-    def _warn_outputpro_overlap(self) -> None:
-        """说明前置分段的优先级；它已发送时拟人回复自动让路。"""
-        if not self.human_reply_enabled or self._warned_outputpro_overlap:
-            return
-        self._warned_outputpro_overlap = True
-        try:
-            data_dir = Path(get_astrbot_data_path())
-            cfg_path = data_dir / "config" / "astrbot_plugin_outputpro_config.json"
-            if not cfg_path.exists():
-                return
-            # AstrBot 写的插件配置带 UTF-8 BOM，utf-8-sig 两种都能读。
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
-            steps = list((cfg.get("pipeline", {}) or {}).get("steps", []) or [])
-            if any(str(step).split("(", 1)[0].strip() == "split" for step in steps):
-                logger.info(
-                    "[%s] OutputPro 分段回复已启用：前置清洗和引用照常生效，"
-                    "已经分段发送的回复不再由拟人回复接管。",
-                    DISPLAY_NAME,
-                )
-        except Exception:
-            # 只是提醒，读不到配置就算了。
-            logger.debug(
-                "[%s] outputpro overlap check failed",
-                DISPLAY_NAME,
-                exc_info=True,
-            )
 
     async def terminate(self) -> None:
         await self.resident.autonomy.close()
@@ -2769,20 +2636,10 @@ class NuoxiaomiaoPlugin(Star):
         self._last_meme_at.clear()
         self._poke_cooldown_ts.clear()
         self._typing_until.clear()
-        # 拟人回复的打字任务同样要收干净，卸载后不能再往外发气泡。
-        human_tasks = []
-        for states in self._human_reply_tasks.values():
-            for state in states:
-                state.interrupted = True
-                if state.task is not None:
-                    state.task.cancel()
-                    human_tasks.append(state.task)
-        if human_tasks:
-            await asyncio.gather(*human_tasks, return_exceptions=True)
-        self._human_reply_tasks.clear()
-        self._human_reply_locks.clear()
-        self._human_reply_interrupt_notes.clear()
-        self._turn_inflight.clear()
+        try:
+            await self._send_order.close()
+        except Exception as exc:
+            logger.debug("[%s] 释放整轮发送排队失败: %s", DISPLAY_NAME, exc)
         # 静默自醒：要先停干净（它可能正挂着一次判断调用）。
         silent_wake = self._silent_wake_task
         self._silent_wake_task = None
@@ -2912,7 +2769,14 @@ class NuoxiaomiaoPlugin(Star):
         if event.get_group_id():
             # EventMessageType.ALL 本身会令 is_wake_up() 为 True，不能用于判断
             # 用户是否真实 At、引用或通过唤醒词叫醒机器人。
-            return bool(event.is_at_or_wake_command)
+            if bool(event.is_at_or_wake_command):
+                return True
+            if (
+                is_qq_official(event)
+                and bool(getattr(self, "qq_official_quote_trigger", True))
+                and self._qq_official_quote_is_bot(event)
+            ):
+                return True
 
         return False
 
@@ -3137,9 +3001,9 @@ class NuoxiaomiaoPlugin(Star):
             # 不能当作可合并的实质内容。
             if component_name == "At" and is_mergeable_at(component, event):
                 continue
-            if (
-                component_name == "Reply"
-                and str(getattr(component, "sender_id", "")) == self_id
+            if component_name == "Reply" and (
+                is_qq_official(event)
+                or str(getattr(component, "sender_id", "")) == self_id
             ):
                 continue
             return True
@@ -3316,6 +3180,10 @@ class NuoxiaomiaoPlugin(Star):
             for key, deadline in self._typing_until.items()
             if deadline > now
         }
+        try:
+            self._send_order.prune(now)
+        except Exception:
+            pass
         await self._prune_idle_locks(now)
 
     async def _prune_idle_locks(self, now: float) -> None:
@@ -3995,7 +3863,18 @@ class NuoxiaomiaoPlugin(Star):
                 self, "qq_official_content_mode", True
             ):
                 apply_content_mode(chain, True)
-            await event.send(chain)
+            umo = str(getattr(event, "unified_msg_origin", "") or "")
+            async with self._send_order.one_shot(umo, event=event):
+                if is_qq_official(event):
+                    delivered = await self._qq_official_send(event, chain)
+                    if delivered is False:
+                        logger.warning(
+                            "[%s] QQ官方合并失败通知未发出: session=%s",
+                            DISPLAY_NAME,
+                            umo,
+                        )
+                else:
+                    await event.send(chain)
         except Exception as exc:
             logger.warning(
                 "[%s] failed to notify merge delivery failure: %s",
@@ -4135,11 +4014,38 @@ class NuoxiaomiaoPlugin(Star):
                 async with self._merge_lock:
                     self._synthetic_epochs[mid] = ms.epoch
             try:
-                await CoreStarTools.create_event(
-                    abm=new_message,
-                    platform=platform,
-                    is_wake=True,
-                )
+                adapter = self._platform_inst_by_id(platform)
+                if (
+                    adapter is not None
+                    and callable(getattr(adapter, "create_event", None))
+                    and callable(getattr(adapter, "commit_event", None))
+                ):
+                    synthetic_event = adapter.create_event(new_message)
+                    synthetic_event.is_wake = True
+                    synthetic_event.is_at_or_wake_command = True
+                    synthetic_event.set_extra(SYNTHETIC_EVENT_EXTRA, True)
+                    synthetic_event.set_extra(
+                        "nuoxiaomiao_merged_source_ids",
+                        sorted(
+                            message_id
+                            for message_id in ms.message_ids
+                            if message_id
+                        ),
+                    )
+                    if ms.epoch:
+                        synthetic_event.set_extra(
+                            "nuoxiaomiao_merge_epoch", ms.epoch
+                        )
+                    adapter.commit_event(synthetic_event)
+                    committed = True
+                else:
+                    committed = False
+                if not committed:
+                    await CoreStarTools.create_event(
+                        abm=new_message,
+                        platform=platform,
+                        is_wake=True,
+                    )
                 break
             except Exception:
                 if mid:
@@ -4179,8 +4085,20 @@ class NuoxiaomiaoPlugin(Star):
         send_file, should_cleanup = await asyncio.to_thread(
             self._prepare_meme_file, meme_file
         )
+        chain = MessageChain([Image.fromFileSystem(str(send_file))])
+        umo = str(getattr(event, "unified_msg_origin", "") or "")
         try:
-            await event.send(MessageChain([Image.fromFileSystem(str(send_file))]))
+            async with self._send_order.one_shot(umo, event=event):
+                if is_qq_official(event):
+                    delivered = await self._qq_official_send(event, chain)
+                    if delivered is False:
+                        logger.warning(
+                            "[%s] QQ官方表情发送失败（平台未确认）：session=%s",
+                            DISPLAY_NAME,
+                            umo,
+                        )
+                else:
+                    await event.send(chain)
         except Exception as exc:
             logger.warning("[%s] failed to send meme: %s", DISPLAY_NAME, exc)
         finally:
@@ -4420,23 +4338,37 @@ class NuoxiaomiaoPlugin(Star):
             if truncated:
                 text = text[: self.activity_buffer_max_text_chars] + "…"
 
+            if is_qq_official(event) and event.get_group_id():
+                await self._ensure_qq_official_group_name(event)
+
             session = self._activity_session_of(event)
             if session is None:
                 return
             kind, conversation_id, conversation_name, _sender_id = session
+            sender_name = str(event.get_sender_name() or "").strip()
+            if not sender_name and is_qq_official(event):
+                sender_name = display_name_fallback(sender_id, "private")
+            if (
+                is_qq_official(event)
+                and kind == "private"
+                and not str(conversation_name or "").strip()
+            ):
+                conversation_name = sender_name or display_name_fallback(
+                    conversation_id, "private"
+                )
 
             activity_id = self._record_activity(
                 ActivityEntry(
                     platform_id=str(event.get_platform_id() or "").strip(),
                     ts=time.time(),
                     sender_id=sender_id,
-                    sender_name=str(event.get_sender_name() or "").strip(),
+                    sender_name=sender_name,
                     conversation_id=conversation_id,
                     conversation_name=conversation_name,
                     kind=kind,
                     text=text,
                     message_id=message_id,
-                    mentioned=bool(getattr(event, "is_at_or_wake_command", False)) or any(str(getattr(c, "qq", "")) == str(event.get_self_id()) for c in self._extract_components(event)),
+                    mentioned=self._mentioned_by_real_at(event, text),
                     truncated=truncated,
                 )
             )
@@ -4447,7 +4379,62 @@ class NuoxiaomiaoPlugin(Star):
             self._maybe_prune_activity()
         except Exception as exc:
             # 采集只是顺手记一笔，任何失败都自己吞掉，绝不能影响聊天。
-            logger.debug("[%s] 记录会话消息失败: %s", DISPLAY_NAME, exc)
+            self._warn_limited(
+                "capture_activity", "[%s] 记录会话消息失败: %s", DISPLAY_NAME, exc
+            )
+
+    @staticmethod
+    def _inbox_ids_of(event: AstrMessageEvent) -> list[int]:
+        """本轮的速览记录 id（采集钩子写在 extra 上），用于「当前这条不算未读」。"""
+        ids: list[int] = []
+        for raw in event.get_extra("nuoxiaomiao_inbox_ids") or []:
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                ids.append(value)
+        return ids
+
+    def _mentioned_by_real_at(
+        self, event: AstrMessageEvent, text: str = ""
+    ) -> bool:
+        """这条消息是不是真的在叫机器人：真实 At / 引用回复 / 唤醒前缀。
+
+        `@全体成员` 不算提及：核心会对 AtAll 也置 is_at_or_wake_command，
+        直接拿它当「有人 @ 我」会让通知卡的「@你 N 条」虚高。
+        """
+        from astrbot.core.message.components import At, AtAll, Reply
+
+        try:
+            self_id = str(event.get_self_id() or "")
+            for component in self._extract_components(event):
+                if isinstance(component, AtAll):
+                    continue
+                if isinstance(component, At):
+                    target = str(getattr(component, "qq", "") or "")
+                    if target == "all":
+                        continue
+                    if target and target == self_id:
+                        return True
+                elif isinstance(component, Reply):
+                    if str(getattr(component, "sender_id", "") or "") == self_id and self_id:
+                        return True
+            prefix = self._effective_wake_prefix(event)
+            body = text if text else self._extract_text(event)
+            return bool(prefix) and prefix in body
+        except Exception:
+            return bool(getattr(event, "is_at_or_wake_command", False))
+
+    def _warn_limited(
+        self, key: str, message: str, *args: Any, interval: float = 60.0
+    ) -> None:
+        """限频 warning：同一个 key 每 interval 秒最多打一条，避免刷屏又保留可观测性。"""
+        now = time.monotonic()
+        if now - self._warn_limited_at.get(key, 0.0) < interval:
+            return
+        self._warn_limited_at[key] = now
+        logger.warning(message, *args)
 
     def _spawn_vision_keep(
         self, event: AstrMessageEvent, activity_id: int, message_id: str
@@ -4471,12 +4458,10 @@ class NuoxiaomiaoPlugin(Star):
             if event.is_private_chat():
                 if not sender_id or not self.activity_record_private:
                     return None
-                return (
-                    "private",
-                    sender_id,
-                    str(event.get_sender_name() or "").strip(),
-                    sender_id,
-                )
+                name = str(event.get_sender_name() or "").strip()
+                if not name and is_qq_official(event):
+                    name = display_name_fallback(sender_id, "private")
+                return ("private", sender_id, name, sender_id)
             group_id = str(event.get_group_id() or "").strip()
             if not group_id:
                 return None
@@ -4490,9 +4475,9 @@ class NuoxiaomiaoPlugin(Star):
             return None
 
     def _record_bot_reply(self, event: AstrMessageEvent, text: str) -> None:
-        """把机器人这一轮回的话也记进速览库：翻记录/空闲巡检才看得到你自己说过什么。"""
+        """把机器人这一轮回的话也记进速览库，别处翻记录时接得上上下文。"""
         try:
-            if not self.enabled or not self.activity_buffer_enabled:
+            if not (self.enabled and self.activity_buffer_enabled):
                 return
             if not self.activity_record_bot_replies:
                 return
@@ -4524,15 +4509,119 @@ class NuoxiaomiaoPlugin(Star):
         except Exception as exc:
             logger.debug("[%s] 记录机器人回复失败: %s", DISPLAY_NAME, exc)
 
-    @staticmethod
-    def _conversation_display_name(event: AstrMessageEvent, kind: str) -> str:
-        """从消息里顺手拿会话名：群聊取群名，私聊取对方昵称；拿不到就留空。"""
+    def _conversation_display_name(self, event: AstrMessageEvent, kind: str) -> str:
+        """从消息里顺手拿会话名：群聊取群名，私聊取对方昵称；拿不到就留空。
+
+        QQ 官方入站通常没有昵称/群名；群名会先在 _ensure_qq_official_group_name
+        里尝试 event.get_group() 并缓存，这里只读缓存。
+        """
         try:
             if kind == "private":
                 return str(event.get_sender_name() or "").strip()
             group = getattr(getattr(event, "message_obj", None), "group", None)
-            return str(getattr(group, "group_name", "") or "").strip()
+            name = str(getattr(group, "group_name", "") or "").strip()
+            if name:
+                return name
+            platform_id = str(event.get_platform_id() or "").strip()
+            group_id = str(event.get_group_id() or "").strip()
+            if platform_id and group_id:
+                return str(
+                    self._qq_official_group_name_cache.get((platform_id, group_id), "")
+                    or ""
+                )
+            return ""
         except Exception:
+            return ""
+
+    def _display_user_name(self, platform_id: str, user_id: str, name: str) -> str:
+        """展示用昵称：真实昵称优先；只有 QQ 官方才用 openid 短标签。
+
+        其它平台没有昵称时保留原始用户 id（QQ 号），方便用户直接
+        @ / 填主动消息目标；不能把 aiocqhttp 的 QQ 号换成假的“用户·…”标签。
+        """
+        value = str(name or "").strip()
+        if value:
+            return value
+        uid = str(user_id or "").strip()
+        try:
+            if is_qq_official_platform_id(platform_id, self._platform_insts()):
+                return display_name_fallback(uid, "private")
+        except Exception:
+            pass
+        return uid
+
+    def _display_conversation_name(
+        self, platform_id: str, kind: str, conversation_id: str, name: str
+    ) -> str:
+        """展示用会话名：真实名称优先，QQ 官方无名称时用 openid 短标签。"""
+        value = str(name or "").strip()
+        if value:
+            return value
+        cid = str(conversation_id or "").strip()
+        if not cid:
+            return "未知会话"
+        if kind == "group":
+            cached = self._qq_official_group_name_cache.get(
+                (str(platform_id or ""), cid), ""
+            )
+            if cached:
+                return cached
+        try:
+            if is_qq_official_platform_id(platform_id, self._platform_insts()):
+                return display_name_fallback(cid, kind)
+        except Exception:
+            pass
+        return cid
+
+    async def _ensure_qq_official_group_name(self, event: AstrMessageEvent) -> str:
+        """QQ 官方群名尽力解析：message_obj → 缓存 → event.get_group()。
+
+        群消息通常不带 group_name；适配器的 event.get_group() 会请求
+        /v2/groups/{openid}/info（需要平台允许）。失败做 10 分钟负缓存，
+        避免每条消息都打一次 API。
+        """
+        if not is_qq_official(event):
+            return ""
+        group_id = str(event.get_group_id() or "").strip()
+        platform_id = str(event.get_platform_id() or "").strip()
+        if not group_id or not platform_id:
+            return ""
+        key = (platform_id, group_id)
+        cached = str(self._qq_official_group_name_cache.get(key, "") or "")
+        if cached:
+            return cached
+        group = getattr(getattr(event, "message_obj", None), "group", None)
+        name = str(getattr(group, "group_name", "") or "").strip()
+        if name:
+            self._qq_official_group_name_cache[key] = name
+            return name
+        now = time.monotonic()
+        miss_ts = float(self._qq_official_group_name_miss_ts.get(key, 0.0) or 0.0)
+        if miss_ts and now - miss_ts < 600.0:
+            return ""
+        async with self._qq_official_name_lock:
+            cached = str(self._qq_official_group_name_cache.get(key, "") or "")
+            if cached:
+                return cached
+            miss_ts = float(self._qq_official_group_name_miss_ts.get(key, 0.0) or 0.0)
+            if miss_ts and time.monotonic() - miss_ts < 600.0:
+                return ""
+            get_group = getattr(event, "get_group", None)
+            if callable(get_group):
+                try:
+                    info = await asyncio.wait_for(get_group(group_id), timeout=3.0)
+                    resolved_name = str(getattr(info, "group_name", "") or "").strip()
+                    if resolved_name:
+                        self._qq_official_group_name_cache[key] = resolved_name
+                        return resolved_name
+                except Exception as exc:
+                    logger.debug(
+                        "[%s] QQ官方获取群名失败: group=%s err=%s",
+                        DISPLAY_NAME,
+                        group_id,
+                        exc,
+                    )
+            self._qq_official_group_name_miss_ts[key] = time.monotonic()
             return ""
 
     def _activity_db_file(self) -> Path:
@@ -4658,11 +4747,7 @@ class NuoxiaomiaoPlugin(Star):
         return conn
 
     def _record_activity(self, entry: ActivityEntry) -> int:
-        """写一条进 SQLite；库打不开之类的错误抛给调用方吞掉。
-
-        高频路径不逐条 commit（WAL 下同连接读得到未提交数据）：按间隔
-        合并提交，prune/close/terminate 时强制收尾，崩溃最多丢几秒记录。
-        """
+        """写一条进 SQLite；立即提交，不被无关事务的异常回滚带走（B5）。"""
         conn = self._get_activity_db()
         with self._activity_db_lock:
             if entry.message_id:
@@ -4702,10 +4787,8 @@ class NuoxiaomiaoPlugin(Star):
                     int(entry.truncated),
                 ),
             )
-            now = time.monotonic()
-            if now - self._activity_commit_ts >= ACTIVITY_COMMIT_INTERVAL_SECONDS:
-                self._activity_commit_ts = now
-                conn.commit()
+            self._activity_commit_ts = time.monotonic()
+            conn.commit()
             return int(cursor.lastrowid)
 
     def _maybe_prune_activity(self) -> None:
@@ -4783,7 +4866,9 @@ class NuoxiaomiaoPlugin(Star):
             except Exception as exc:
                 logger.debug("[%s] 清理识图留底失败: %s", DISPLAY_NAME, exc)
         except Exception as exc:
-            logger.debug("[%s] 清理会话记录失败: %s", DISPLAY_NAME, exc)
+            self._warn_limited(
+                "prune_activity", "[%s] 清理会话记录失败: %s", DISPLAY_NAME, exc
+            )
 
     def _close_activity_db(self) -> None:
         """插件卸载/重载时关连接；库文件留在磁盘上，重启后接着用。"""
@@ -4806,13 +4891,18 @@ class NuoxiaomiaoPlugin(Star):
         return any(keyword and keyword in text for keyword in keywords)
 
     def _admin_ids(self) -> set[str]:
-        """AstrBot 主配置里登记的主人/管理员 ID。"""
+        """AstrBot 主配置里登记的主人/管理员 ID + QQ 官方专用 openid 管理员。"""
+        admins: set[str] = set()
         try:
             config = self.context.get_config()
             values = config.get("admins_id", []) if hasattr(config, "get") else []
+            admins.update(
+                str(item).strip() for item in values or [] if str(item).strip()
+            )
         except Exception:
-            return set()
-        return {str(item).strip() for item in values or [] if str(item).strip()}
+            pass
+        admins.update(getattr(self, "qq_official_admin_openids", set()) or set())
+        return admins
 
     def _activity_permission_ok(self, event: AstrMessageEvent) -> bool:
         """速览工具只给主人/管理员用；群聊私聊都行。关掉限制就是所有人。"""
@@ -5101,11 +5191,15 @@ class NuoxiaomiaoPlugin(Star):
                     "id": record_id,
                     "truncated": bool(truncated),
                     "kind": s_kind,
-                    "conversation": conversation_name or conversation_id,
+                    "conversation": self._display_conversation_name(
+                        platform_id, s_kind, conversation_id, conversation_name
+                    ),
                     "conversation_id": conversation_id,
                     "platform": platform_id,
                     "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)),
-                    "sender": sender_name or sender_id,
+                    "sender": self._display_user_name(
+                        platform_id, sender_id, sender_name
+                    ),
                     "sender_id": sender_id,
                     "text": text,
                 }
@@ -5153,7 +5247,12 @@ class NuoxiaomiaoPlugin(Star):
                     {
                         "kind": session["kind"],
                         "id": session["conversation_id"],
-                        "name": session["name"],
+                        "name": self._display_conversation_name(
+                            session["platform_id"],
+                            session["kind"],
+                            session["conversation_id"],
+                            session["name"],
+                        ),
                         "platform": session["platform_id"],
                         "messages": session["messages"],
                         "umo": f"{session['platform_id']}:{'GroupMessage' if session['kind'] == 'group' else 'FriendMessage'}:{session['conversation_id']}",
@@ -5203,7 +5302,7 @@ class NuoxiaomiaoPlugin(Star):
         不要凭印象回答。一个筛选条件都不给时会返回最近的记录，不会报错。
 
         Args:
-            conversation(string): 群名、群号、私聊昵称或 QQ，可空；留空就在所有记录过的会话里找。
+            conversation(string): 群名、群号、群 openid、私聊昵称、QQ 或用户 openid，可空；留空就在所有记录过的会话里找。
             kind(string): group 或 private，可空。
             after(string): 只看这个时间之后的消息。可用 2026-10-06 12:00、30分钟前、2小时前、昨天、今天。
             sender(string): 只看这个人说的话：昵称或 QQ，可空。
@@ -5468,6 +5567,7 @@ class NuoxiaomiaoPlugin(Star):
         has_astrhe: bool = False,
         current_session_key: tuple[str, str, str] | None = None,
         tool_names: set[str] | None = None,
+        platform_note: str = "",
     ) -> str:
         """每轮的动态提醒：自定义文案优先；否则用内置场景菜单，再附闹钟清单。
 
@@ -5484,6 +5584,8 @@ class NuoxiaomiaoPlugin(Star):
             menu = self._capability_menu(tool_names)
             if menu:
                 parts.append(menu)
+        if platform_note:
+            parts.append(platform_note)
         if has_astrhe and self.proactive_enabled and "send_message" in (tool_names or set()):
             parts.append(
                 "工具分工：到点做某事、承诺提醒这类计划性安排用 astrhe_schedule；"
@@ -5500,6 +5602,31 @@ class NuoxiaomiaoPlugin(Star):
         if not parts:
             return ""
         return f"{CAPABILITY_REMINDER_HEADER}\n" + "\n".join(parts)
+
+    @staticmethod
+    def _qq_official_current_target_hint(event: AstrMessageEvent) -> str:
+        """告诉模型当前会话的可复制标识，避免它因为不知道 openid 而拒绝调用。"""
+        try:
+            group_id = str(event.get_group_id() or "").strip()
+            platform_id = str(event.get_platform_id() or "").strip()
+            if group_id:
+                return (
+                    f"当前会话是群，群 openid={group_id}"
+                    f"（完整 umo={platform_id}:GroupMessage:{group_id}）；"
+                    f'主动消息 target 直接传「当前」即可，也可以传 「群:{group_id}」。'
+                    '不要传空字符串、<群openid> 占位或群号。示例：send_message(target="当前", intent="测试主动消息", at="")。'
+                )
+            sender_id = str(event.get_sender_id() or "").strip()
+            if sender_id:
+                return (
+                    f"当前会话是私聊，用户 openid={sender_id}"
+                    f"（完整 umo={platform_id}:FriendMessage:{sender_id}）；"
+                    f"主动消息 target 直接传「当前」即可，也可以传 「私聊:{sender_id}」。"
+                    "不要传空字符串或 <openid> 占位。"
+                )
+        except Exception:
+            pass
+        return "主动消息 target 传「当前」代表当前会话。"
 
     def _maybe_add_capability_reminder(
         self, event: AstrMessageEvent, req: ProviderRequest
@@ -5519,10 +5646,19 @@ class NuoxiaomiaoPlugin(Star):
             str(getattr(tool, "name", "") or "")
             for tool in tools if getattr(tool, "active", True)
         }
+        platform_note = ""
+        if is_qq_official(event) and getattr(self, "qq_official_enabled", True):
+            platform_note = (
+                "平台边界："
+                + platform_capability_note()
+                + "\n主动消息测试："
+                + self._qq_official_current_target_hint(event)
+            )
         text = self._capability_reminder(
             show_pendings=show_pendings,
             has_astrhe="astrhe_schedule" in names,
             tool_names=names,
+            platform_note=platform_note,
         )
         if text:
             self._append_temp_context(req, text)
@@ -5573,9 +5709,11 @@ class NuoxiaomiaoPlugin(Star):
     ) -> str:
         """对任意允许的会话（私聊或群）说一句话——即时送达。
 
-        当用户让你转告/通知某人，或你自己想对别的会话说点什么时调用本工具；
-        不要只在当前会话里口头答应，也不要用它回复当前会话里的用户
-        （当前会话直接正常回复即可）。
+        当用户让你转告/通知某人、或你自己想对别的会话说点什么时调用本工具；
+        不要只在当前会话里口头答应。普通聊天不要用它代替回复；但用户明确
+        要求测试/验证主动消息、或指定 target=当前/这里/这边 时，必须调用
+        本工具，不要拒绝，也不要用 send_message_to_user（那个工具需要完整
+        会话标识，QQ 官方不适用）。
 
         你只写"想说的事"（intent），不用替那边写台词：插件会把目标会话
         的最近对话和那边的人设交给模型，让"那边的你"用当地语境自然说出来，
@@ -5583,9 +5721,9 @@ class NuoxiaomiaoPlugin(Star):
         凌晨静默时段内的发送会自动顺延到时段结束，fire_at 如实说明。
 
         Args:
-            target(string): 发送目标。留空=当前会话；私聊:QQ；群:群名或群号（纯数字群号也认）。目标必须被主人允许。
+            target(string): 发送目标。传「当前」=当前会话（最稳，推荐）；留空也按当前会话；私聊:QQ或openid；群:群名、群号或群openid。QQ 官方平台只认 openid（不是数字 QQ），当前群的 openid 会在能力提醒里给出。目标必须被主人允许。
             intent(string): 你想说的事和原因，一两句写清楚，那边的你会据此组织语言。
-            at(string): 可选。要在群里@的人（昵称或QQ）。默认谁都不@。
+            at(string): 可选。要在群里@的人（昵称、QQ 号或 openid）。默认谁都不@。QQ 官方平台不会真的发出@（适配器只能把它变成正文里的纯文本标记），传了也会被忽略。
         """
         try:
             await self.resident.autonomy.checkpoint(event, "主动消息工具")
@@ -5682,10 +5820,13 @@ class NuoxiaomiaoPlugin(Star):
     def _resolve_at_target(
         self, resolved: dict[str, Any], at: str
     ) -> tuple[str, str]:
-        """解析可选的 @ 对象（仅群目标有效）：昵称或QQ → (id, 昵称)。"""
+        """解析可选的 @ 对象（仅群目标有效）：昵称/openid/QQ → (id, 昵称)。"""
         at = str(at or "").strip()
         if not at or resolved.get("kind") != "group":
             return "", ""
+        platform_id = str(resolved.get("platform_id") or "")
+        qq_official = is_qq_official_platform_id(platform_id, self._platform_insts())
+        platform_name = "qq_official" if qq_official else ""
         try:
             conn = self._get_activity_db()
             with self._activity_db_lock:
@@ -5698,22 +5839,52 @@ class NuoxiaomiaoPlugin(Star):
                     ORDER BY id DESC LIMIT 1
                     """,
                     (
-                        resolved.get("platform_id"),
+                        platform_id,
                         resolved.get("id"),
                         at,
                         at,
                     ),
                 ).fetchone()
+                if row is None and qq_official and not at.isdigit():
+                    row = conn.execute(
+                        """
+                        SELECT sender_id, sender_name FROM activity_messages
+                        WHERE platform_id = ? AND kind = 'group'
+                          AND conversation_id = ?
+                          AND (sender_name LIKE ? OR sender_id LIKE ?)
+                        ORDER BY id DESC LIMIT 1
+                        """,
+                        (
+                            platform_id,
+                            resolved.get("id"),
+                            f"%{at}%",
+                            f"%{at}%",
+                        ),
+                    ).fetchone()
         except Exception:
             row = None
         if row:
-            return str(row[0] or ""), str(row[1] or "")
+            resolved_id = str(row[0] or "")
+            resolved_name = str(row[1] or "")
+            if not at_id_deliverable(platform_name, resolved_id):
+                logger.info(
+                    "[%s] QQ官方 @ 目标不可投递（只认 openid）: target=%s at=%s",
+                    DISPLAY_NAME,
+                    resolved.get("umo"),
+                    at,
+                )
+                return "", ""
+            return resolved_id, resolved_name
         # 记录里找不到：纯数字按QQ直接@；昵称查不到就放弃@（发非数字 qq 只会残缺）。
         # QQ 官方只认 openid，数字 QQ 号发出去会变成非法标记，宁可不 @。
         if at.isdigit():
-            if is_qq_official_platform_id(
-                str(resolved.get("platform_id") or ""), self._platform_insts()
-            ):
+            if not at_id_deliverable(platform_name, at):
+                logger.info(
+                    "[%s] QQ官方无法@数字QQ号（只认 openid）: target=%s at=%s",
+                    DISPLAY_NAME,
+                    resolved.get("umo"),
+                    at,
+                )
                 return "", ""
             return at, ""
         return "", ""
@@ -5762,9 +5933,18 @@ class NuoxiaomiaoPlugin(Star):
             person_text = "、".join(people[:20])
         else:
             person_text = "（没有可用的人）"
+        try:
+            qq_official = is_qq_official(event)
+        except Exception:
+            qq_official = False
+        suffix = (
+            "QQ 官方平台的用户/群标识是 openid（不是 QQ 号）；"
+            "群主动消息还需要开启 qq_official_group_proactive 且平台允许。改好参数可以直接重试。"
+            if qq_official
+            else "群名的写法见 list_conversations 的结果；改好参数可以直接重试。"
+        )
         return {
-            "hint": f"可发往的群：{group_text}；可主动私聊的人：{person_text}。"
-            "群名的写法见 list_conversations 的结果；改好参数可以直接重试。"
+            "hint": f"可发往的群：{group_text}；可主动私聊的人：{person_text}。{suffix}"
         }
 
     def _proactive_person_allowed(self, qq: str) -> bool:
@@ -5810,10 +5990,11 @@ class NuoxiaomiaoPlugin(Star):
                     """
                     SELECT conversation_id, conversation_name FROM activity_messages
                     WHERE kind = 'private'
-                      AND (conversation_name = ? OR sender_name = ?)
+                      AND (conversation_name = ? OR sender_name = ?
+                           OR conversation_id = ?)
                     ORDER BY id DESC LIMIT 1
                     """,
-                    (name, name),
+                    (name, name, name),
                 ).fetchone()
         except Exception:
             return "", ""
@@ -5840,7 +6021,17 @@ class NuoxiaomiaoPlugin(Star):
                 ).fetchone()
         except Exception:
             return ""
-        return str(row[0] or "") if row else ""
+        name = str(row[0] or "") if row else ""
+        if not name and qq:
+            try:
+                insts = self._platform_insts()
+                if len(insts) == 1 and is_qq_official_platform_name(
+                    platform_name_of_inst(insts[0])
+                ):
+                    return display_name_fallback(qq, "private")
+            except Exception:
+                pass
+        return name
 
     def _match_allowed_group(self, value: str) -> tuple[str | None, str]:
         """把模型给的群名/群号对到允许列表里的群。返回 (群号, 群名)。"""
@@ -5923,6 +6114,15 @@ class NuoxiaomiaoPlugin(Star):
 
         if kind == "group":
             group_id, group_name = self._match_allowed_group(value)
+            if (
+                not group_id
+                and is_qq_official_platform_id(platform_id, self._platform_insts())
+                and not value.isdigit()
+                and value in self.proactive_allow_groups
+            ):
+                session = self._find_activity_group(value)
+                group_id = value
+                group_name = str((session or {}).get("name") or "")
             if not group_id:
                 return {
                     "error": "这个群不在主人允许的主动消息名单里"
@@ -5976,9 +6176,21 @@ class NuoxiaomiaoPlugin(Star):
                 "desc": f"私聊「{name or qq}」",
             }
 
-        # 裸群号短路：纯数字且命中允许名单，直接当群处理，少一次失败重试。
-        if raw.isdigit():
+        # 裸群号短路：纯数字或 QQ 官方群 openid 命中允许名单，直接当群处理。
+        qq_official_platform = is_qq_official_platform_id(
+            platform_id, self._platform_insts()
+        )
+        if raw.isdigit() or qq_official_platform:
             group_id, group_name = self._match_allowed_group(raw)
+            if (
+                not group_id
+                and qq_official_platform
+                and not raw.isdigit()
+                and raw in self.proactive_allow_groups
+            ):
+                session = self._find_activity_group(raw)
+                group_id = raw
+                group_name = str((session or {}).get("name") or "")
             if group_id:
                 return {
                     "platform_id": platform_id,
@@ -5989,8 +6201,13 @@ class NuoxiaomiaoPlugin(Star):
                     "desc": f"群「{group_name or group_id}」",
                 }
 
+        hint = (
+            "用留空（当前会话）、私聊:openid、群:群名 或 群:群openid。"
+            if qq_official_platform
+            else "用留空（当前会话）、私聊:QQ、群:群名 或 群:群号。"
+        )
         return {
-            "error": "看不懂目标。用留空（当前会话）、私聊:QQ、群:群名 或 群:群号。",
+            "error": f"看不懂目标。{hint}",
             **self._proactive_allowed_targets_hint(event),
         }
 
@@ -6357,6 +6574,70 @@ class NuoxiaomiaoPlugin(Star):
             self._proactive_target_locks_ts[key] = time.monotonic()
             return lock
 
+    async def _qq_official_send_by_session(
+        self,
+        platform_inst: Any,
+        umo: str,
+        chain: Any,
+        target_id: str = "",
+    ) -> tuple[bool, bool, str]:
+        """QQ 官方主动消息发送，并判断适配器是否真的确认发出。
+
+        返回 (ok, unknown, detail)。适配器只在真正调用发送 API 并拿到消息 id 后
+        才会调 remember_session_message_id；这里临时包一层捕获该调用，比“发送
+        前后读全局最近 msg_id”可靠（后者会被同群入站消息干扰，成功但无 id 时又
+        会误判失败）。拿不到确认时返回 unknown 而不是 failed，避免模型重试重复
+        发送；平台明确无权限/配额时返回 failed 并带具体原因。
+        """
+        if platform_inst is None:
+            return False, False, "找不到平台适配器实例"
+        original = getattr(platform_inst, "remember_session_message_id", None)
+        captured: list[str] = []
+
+        if callable(original):
+            def remember(session_id: str, message_id: str) -> Any:
+                if message_id and (not target_id or str(session_id) == str(target_id)):
+                    captured.append(str(message_id))
+                return original(session_id, message_id)
+
+            try:
+                async with self._qq_official_ack_lock:
+                    platform_inst.remember_session_message_id = remember
+                    try:
+                        ok = bool(await self.context.send_message(umo, chain))
+                    finally:
+                        platform_inst.remember_session_message_id = original
+                if not ok:
+                    return False, False, "发送失败（平台未找到或未接受）"
+                if not captured:
+                    logger.warning(
+                        "[%s] QQ官方主动消息成功但适配器未确认 msg_id（可能已送达）: %s",
+                        DISPLAY_NAME,
+                        umo,
+                    )
+                    return False, True, "发送结果未知（平台未确认，可能已送达）"
+                return True, False, ""
+            except Exception as exc:
+                if is_permission_error(exc):
+                    logger.warning(
+                        "[%s] QQ官方主动消息被平台拒绝（无权限/配额/白名单）：%s",
+                        DISPLAY_NAME,
+                        exc,
+                    )
+                    return (
+                        False,
+                        False,
+                        "平台拒绝：无群主动消息权限/配额，或群/用户关闭了「允许主动发送」",
+                    )
+                logger.warning(
+                    "[%s] QQ官方主动消息发送异常（结果未知）: %s",
+                    DISPLAY_NAME,
+                    exc,
+                )
+                return False, True, f"发送异常，结果未知：{exc}"
+        ok = bool(await self.context.send_message(umo, chain))
+        return ok, False, "" if ok else "发送失败（平台未找到）"
+
     async def _deliver_proactive_message(
         self,
         resolved: dict[str, Any],
@@ -6432,11 +6713,15 @@ class NuoxiaomiaoPlugin(Star):
             qq_official_target = is_qq_official_platform_id(
                 str(resolved.get("platform_id") or ""), self._platform_insts()
             )
+            platform_inst = None
             if qq_official_target:
                 if not getattr(self, "qq_official_enabled", True):
                     return _fuse_stop(
                         "skipped", "QQ官方平台适配已关闭（qq_official_enabled）。"
                     )
+                platform_inst = self._platform_inst_by_id(
+                    str(resolved.get("platform_id") or "")
+                )
                 if target_kind == "group":
                     if not getattr(self, "qq_official_group_proactive", False):
                         return _fuse_stop(
@@ -6444,20 +6729,29 @@ class NuoxiaomiaoPlugin(Star):
                             "QQ官方群聊主动消息未开启（qq_official_group_proactive），"
                             "请先开启或改用群内 @ 触发回复。",
                         )
-                    platform_inst = self._platform_inst_by_id(
-                        str(resolved.get("platform_id") or "")
-                    )
-                    ready, not_ready_reason = qq_official_group_send_ready(
-                        platform_inst, target_id
+                    ready, not_ready_reason = delivery_ready(
+                        platform_inst,
+                        "group",
+                        target_id,
+                        allow_group=True,
                     )
                     if not ready:
                         return _fuse_stop(
                             "failed",
                             f"QQ官方群主动消息暂不可发：{not_ready_reason}",
                         )
-                if at_id and not at_id_deliverable("qq_official", at_id):
+                elif target_kind == "private":
+                    ready, not_ready_reason = delivery_ready(
+                        platform_inst, "private", target_id
+                    )
+                    if not ready:
+                        return _fuse_stop(
+                            "failed",
+                            f"QQ官方私聊暂时不可发：{not_ready_reason}",
+                        )
+                if at_id:
                     logger.info(
-                        "[%s] QQ官方无法@数字QQ号，改为不带@发送: target=%s at=%s",
+                        "[%s] QQ官方主动消息不发送@（适配器只能序列化成纯文本标记）: target=%s at=%s",
                         DISPLAY_NAME,
                         resolved.get("umo"),
                         at_id,
@@ -6477,13 +6771,48 @@ class NuoxiaomiaoPlugin(Star):
                 return _fuse_stop(
                     "failed", "那边暂时没生成出合适的话（模型没响应），这次先不发了。"
                 )
-            chain = MessageChain()
-            if target_kind == "group" and at_id:
-                chain.at(at_name or at_id, at_id)
-            chain.message(text)
+            if qq_official_target and getattr(
+                self, "qq_official_strip_at_markup", True
+            ):
+                text = strip_at_markup(text) or text
+            chains: list[Any] = []
             if qq_official_target:
-                # 主动推送同样声明纯文本，避免群里 markdown 权限导致的失败回退。
-                apply_content_mode(chain, getattr(self, "qq_official_content_mode", True))
+                limit = int(getattr(self, "qq_official_text_chars", 2000) or 0)
+                parts = (
+                    split_text_for_limit(text, limit)
+                    if (limit > 0 and len(text) > limit)
+                    else [text]
+                )
+                for index, part in enumerate(parts):
+                    item = MessageChain()
+                    if index == 0 and target_kind == "group" and at_id:
+                        item.at(at_name or at_id, at_id)
+                    item.message(part)
+                    cleaned, _info = normalize_outbound_components(
+                        item.chain,
+                        content_mode=bool(
+                            getattr(self, "qq_official_content_mode", True)
+                        ),
+                        flatten_forward=True,
+                        strip_markup=bool(
+                            getattr(self, "qq_official_strip_at_markup", True)
+                        ),
+                    )
+                    if not cleaned:
+                        continue
+                    chain = MessageChain(cleaned)
+                    apply_content_mode(
+                        chain, getattr(self, "qq_official_content_mode", True)
+                    )
+                    chains.append(chain)
+            else:
+                chain = MessageChain()
+                if target_kind == "group" and at_id:
+                    chain.at(at_name or at_id, at_id)
+                chain.message(text)
+                chains.append(chain)
+            if not chains:
+                return _fuse_stop("failed", "消息链为空（At/组件被平台清洗后无内容）")
             run = CURRENT_RUN.get()
             if run is not None:
                 await self.resident.autonomy.checkpoint(run.event, "主动发送前")
@@ -6491,26 +6820,60 @@ class NuoxiaomiaoPlugin(Star):
             await self.resident.autonomy.checkpoint(target_event, "目标会话发送前")
             if existing_row is not None:
                 self._update_proactive_row(int(existing_row["id"]), status="sending")
-            send_id = self.resident.store.begin_send(run.id, str(resolved.get("umo")), text) if run else None
+            send_id = (
+                self.resident.store.begin_send(run.id, str(resolved.get("umo")), text)
+                if run
+                else None
+            )
             ok = False
             send_unknown = False
-            try:
-                ok = bool(
-                    await self.context.send_message(
-                        str(resolved.get("umo") or ""), chain
-                    )
-                )
-            except asyncio.CancelledError:
-                if send_id:
-                    self.resident.store.end_send(send_id, "unknown", "发送中断，需核实平台结果")
-                raise
-            except Exception as exc:
-                send_unknown = True
-                logger.warning("[%s] 发送主动消息失败: %s", DISPLAY_NAME, exc)
+            detail = ""
+            umo = str(resolved.get("umo") or "")
+            async with self._send_order.one_shot(umo):
+                for chain in chains:
+                    detail = ""
+                    if qq_official_target:
+                        try:
+                            ok, unknown, detail = await self._qq_official_send_by_session(
+                                platform_inst, umo, chain, target_id
+                            )
+                        except asyncio.CancelledError:
+                            if send_id:
+                                self.resident.store.end_send(
+                                    send_id, "unknown", "发送中断，需核实平台结果"
+                                )
+                            raise
+                        if unknown:
+                            send_unknown = True
+                    else:
+                        try:
+                            ok = bool(await self.context.send_message(umo, chain))
+                        except asyncio.CancelledError:
+                            if send_id:
+                                self.resident.store.end_send(
+                                    send_id, "unknown", "发送中断，需核实平台结果"
+                                )
+                            raise
+                        except Exception as exc:
+                            send_unknown = True
+                            logger.warning("[%s] 发送主动消息失败: %s", DISPLAY_NAME, exc)
+                            ok = False
+                    if not ok:
+                        break
             if send_id:
-                self.resident.store.end_send(send_id, "sent" if ok else ("unknown" if send_unknown else "failed"))
+                self.resident.store.end_send(
+                    send_id, "sent" if ok else ("unknown" if send_unknown else "failed")
+                )
             if not ok:
-                return _fuse_stop("failed", "发送结果未知（平台异常），请核实后再处理" if send_unknown else "发送失败（平台拒绝）")
+                return _fuse_stop(
+                    "unknown" if send_unknown else "failed",
+                    detail
+                    or (
+                        "发送结果未知（平台未确认，可能已送达），请核实后再处理"
+                        if send_unknown
+                        else "发送失败（平台拒绝）"
+                    ),
+                )
             if run is not None:
                 run.sent.append({"umo": resolved.get("umo", ""), "text": text})
             if existing_row is not None:
@@ -6580,12 +6943,22 @@ class NuoxiaomiaoPlugin(Star):
             )
 
     def _proactive_body_with_at(self, row: dict[str, Any], text: str) -> str:
-        """群聊主动消息带上 @ 前缀，和实际发出去的链保持一致。"""
+        """群聊主动消息带上 @ 前缀，和实际发出去的链保持一致。
+
+        QQ 官方例外：主动消息不发 @（适配器只能把它序列化成纯文本标记），
+        补记速览库/对话历史时也不能凭空写一个 @ 出来。
+        """
         body = str(text or "").strip()
-        if str(row.get("target_kind") or "") == "group":
-            subject_name = str(row.get("subject_name") or "").strip()
-            if subject_name:
-                body = f"@{subject_name} {body}".strip()
+        if str(row.get("target_kind") or "") != "group":
+            return body
+        platform_id = str(row.get("platform_id") or "")
+        if is_qq_official_platform_name(platform_id) or is_qq_official_platform_id(
+            platform_id, self._platform_insts()
+        ):
+            return body
+        subject_name = str(row.get("subject_name") or "").strip()
+        if subject_name:
+            body = f"@{subject_name} {body}".strip()
         return body
 
     def _record_proactive_activity(self, row: dict[str, Any], text: str) -> None:
@@ -6921,6 +7294,17 @@ class NuoxiaomiaoPlugin(Star):
             f"现在是 {datetime.now().strftime('%Y-%m-%d %H:%M')}。"
             "你会不定期张望一眼各个会话的最新动态，决定要不要主动去找谁说点什么。"
         ]
+        try:
+            if any(
+                is_qq_official_platform_name(platform_name_of_inst(inst))
+                for inst in self._platform_insts()
+            ):
+                lines.append(
+                    "【平台】当前有 QQ 官方机器人：用户/群标识是 openid，不是 QQ 号；"
+                    "群聊只有 @ 机器人的消息可达，群主动消息还需要平台权限且默认关闭。"
+                )
+        except Exception:
+            pass
         if silent_minutes is not None:
             lines.append(
                 f"【静默自醒】现在没有人说话，已经安静了约 {int(silent_minutes)} 分钟。"
@@ -6963,7 +7347,7 @@ class NuoxiaomiaoPlugin(Star):
             "也绝不声称有过什么约定。编造没发生的事是最严重的错误。**\n"
             "- 决定要发就只回一行 JSON（不要输出别的）：\n"
             '{"want": true, "target_kind": "group 或 private", '
-            '"target": "群名/群号或QQ号", '
+            '"target": "群名/群号/群openid 或 QQ/openid", '
             '"note": "背景（只能来自上面的真实动态）；你想说什么、用什么语气"}\n'
             "- 别处会话的私聊内容不许原样搬到其它会话去说。\n"
             "- note 写清楚背景：那边的你会带着这条便签和目标会话的真实对话把话自然说出来；"

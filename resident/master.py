@@ -109,6 +109,11 @@ class Master:
         master_umo = await self.resolve_master_umo()
         if not master_umo:
             return False
+        try:
+            if event.get_extra("nuoxiaomiao_no_brain", False):
+                return False
+        except Exception:
+            pass
         if self.plugin._is_self_wake_event(event):
             # 自醒轮保留自己的旧历史供思考，不抢占主脑上下文。
             return False

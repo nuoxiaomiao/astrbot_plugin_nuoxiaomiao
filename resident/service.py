@@ -65,6 +65,12 @@ class ResidentServices:
     async def snapshot(self, umo="", before=0):
         sessions = self.plugin._activity_sessions("all")
         for s in sessions:
+            s["name"] = self.plugin._display_conversation_name(
+                s["platform_id"],
+                s["kind"],
+                s["conversation_id"],
+                s.get("name", ""),
+            )
             s["umo"] = (
                 f"{s['platform_id']}:{'GroupMessage' if s['kind'] == 'group' else 'FriendMessage'}:{s['conversation_id']}"
             )

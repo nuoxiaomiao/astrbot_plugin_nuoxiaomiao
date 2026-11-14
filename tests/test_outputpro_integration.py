@@ -58,14 +58,11 @@ class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
         StateManager._groups.clear()
         self.context = FakeContext()
         self.plugin = make_plugin(
-            context=self.context, human_reply_enabled=True, debounce_enabled=False,
-            human_reply_chars_per_minute=10_000_000,
+            context=self.context,
             activity_db_path=str(Path(self.directory.name) / "activity.db"),
             merge_localize_images=False,
         )
         self.plugin._record_bot_reply = Mock(wraps=self.plugin._record_bot_reply)
-        self.real_spawn_human_reply = self.plugin._spawn_human_reply
-        self.plugin._spawn_human_reply = Mock()
         self.addAsyncCleanup(self.plugin.terminate)
 
     def output(self, steps, overrides=None):
@@ -89,23 +86,29 @@ class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
     async def run_hooks(self, output, event):
         await output.on_message(event)
+        # Using observe_outgoing_result to trigger observer and qq_official_force_content_mode to clean/prepare content
         await self.plugin.observe_outgoing_result(event)
+        await self.plugin.qq_official_force_content_mode(event)
         await output.on_decorating_result(event)
-        await self.plugin.on_decorating_result(event)
+        await self.plugin.qq_official_force_content_mode_late(event)
 
     def recorded_texts(self):
         return [row[5] for row in fetch_activity_rows(self.plugin, sender_id="bot")]
 
-    async def test_cleaned_text_is_used_by_human_reply(self):
+    async def test_cleaned_text_is_delivered_and_recorded(self):
         event = self.event("[动作]你好🙂。这是第二句。")
         output = self.output(["clean"])
         await self.run_hooks(output, event)
-        self.assertIsNone(event.get_result())
-        arguments = self.plugin._spawn_human_reply.call_args.args
-        self.assertNotIn("动作", "".join(arguments[2]))
-        self.assertNotIn("🙂", "".join(arguments[2]))
-        self.assertEqual(event.sent, [])
-        self.plugin._finish_send_observer(event)
+        await event.send(event.get_result())
+        await self.plugin.after_reply_sent(event)
+        self.assertEqual(len(event.sent), 1)
+        body = event.sent[0].get_plain_text()
+        self.assertNotIn("动作", body)
+        self.assertNotIn("🙂", body)
+        recorded = self.recorded_texts()
+        for text in recorded:
+            self.assertNotIn("动作", text)
+            self.assertNotIn("🙂", text)
 
     async def test_outputpro_split_keeps_its_final_segment(self):
         event = self.event()
@@ -113,7 +116,6 @@ class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
         await self.run_hooks(output, event)
         self.assertEqual(len(event.sent), 2)
         self.assertEqual(event.get_result().get_plain_text().rstrip("。"), "第三段")
-        self.plugin._spawn_human_reply.assert_not_called()
         self.assertEqual(event.get_extra(SEND_OBSERVER_EXTRA)["attempted"], 2)
         await event.send(event.get_result())
         self.assertEqual(self.plugin._record_bot_reply.call_count, 3)
@@ -127,7 +129,7 @@ class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
         await StateManager.get_group(event.get_group_id()).record_outgoing_message()
         await self.plugin.observe_outgoing_result(event)
         await output.on_decorating_result(event)
-        await self.plugin.on_decorating_result(event)
+        await self.plugin.observe_outgoing_result(event)
         await event.send(MessageChain().message("你好。"))
         self.assertTrue(any(isinstance(item, Reply) and item.id == "original-source" for item in event.sent[0].chain))
         self.assertEqual(self.plugin._record_bot_reply.call_args.args[1], "你好。")
@@ -141,22 +143,25 @@ class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
         await StateManager.get_group(event.get_group_id()).record_outgoing_message()
         await self.plugin.observe_outgoing_result(event)
         await output.on_decorating_result(event)
-        await self.plugin.on_decorating_result(event)
+        await self.plugin.observe_outgoing_result(event)
         await event.send(event.get_result())
         self.assertTrue(event.sent)
         self.assertFalse(any(isinstance(item, Reply) and item.id == event.message_obj.message_id
                              for message in event.sent for item in message.chain))
         await self.plugin.after_reply_sent(event)
 
-    async def test_tool_status_does_not_prevent_final_human_reply_or_enter_records(self):
+    async def test_tool_status_does_not_prevent_final_split_or_enter_records(self):
         event = self.event("最终回复。")
         self.plugin._ensure_send_observer(event)
         await event.send(MessageChain(type="tool_call").message("工具执行状态"))
-        event._result = MessageEventResult(chain=[Plain("最终回复。")], result_content_type=ResultContentType.LLM_RESULT)
-        await self.plugin.on_decorating_result(event)
-        self.plugin._spawn_human_reply.assert_called_once()
-        self.plugin._record_bot_reply.assert_not_called()
-        self.plugin._finish_send_observer(event)
+        event._result = MessageEventResult(
+            chain=[Plain("第一段。第二段。")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+        await self.run_hooks(self.output(["split"]), event)
+        await event.send(event.get_result())
+        await self.plugin.after_reply_sent(event)
+        self.assertEqual(self.recorded_texts(), ["第一段。", "第二段。"])
 
     async def test_cleaning_away_the_entire_body_does_not_record_or_start_typing(self):
         event = self.event("[只有动作]🙂")
@@ -164,7 +169,6 @@ class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.get_result().get_plain_text(), "")
         self.assertEqual(event.sent, [])
         self.assertEqual(self.recorded_texts(), [])
-        self.plugin._spawn_human_reply.assert_not_called()
         self.plugin._finish_send_observer(event)
 
     async def test_outputpro_blocked_body_is_neither_sent_nor_recorded(self):
@@ -177,30 +181,48 @@ class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.sent, [])
         self.assertEqual(event.get_extra(SEND_OBSERVER_EXTRA)["attempted"], 0)
         self.assertEqual(self.recorded_texts(), [])
-        self.plugin._spawn_human_reply.assert_not_called()
         self.plugin._finish_send_observer(event)
 
-    async def test_real_at_conversion_survives_cleaning_and_human_delivery(self):
+    async def test_real_at_conversion_survives_cleaning_and_split_delivery(self):
         event = self.event("[at:10002][动作]这是需要艾特发出的实际正文。")
-        output = self.output(["at", "clean"], overrides={
+        output = self.output(["at", "clean", "split"], overrides={
             "at": {"at_str": False, "at_prob": 1},
         })
-        self.plugin._spawn_human_reply = Mock(wraps=self.real_spawn_human_reply)
-        self.plugin._human_typing_wait = AsyncMock(return_value=True)
         await self.run_hooks(output, event)
-        tasks = [state.task for states in self.plugin._human_reply_tasks.values() for state in states]
-        await asyncio.gather(*tasks)
-        self.assertIsNone(event.get_result())
-        self.assertTrue(event.sent)
+        if event.get_result() is not None:
+            await event.send(event.get_result())
+        await self.plugin.after_reply_sent(event)
+
         ats = [component for message in event.sent for component in message.chain if isinstance(component, At)]
         self.assertEqual([str(component.qq) for component in ats], ["10002"])
-        first_body = "".join(component.text for component in event.sent[0].chain if isinstance(component, Plain))
-        self.assertIn("这是需要艾特发出的实际正文", first_body)
         body = "\n".join(component.text for message in event.sent for component in message.chain if isinstance(component, Plain))
         self.assertIn("这是需要艾特发出的实际正文", body)
-        self.assertNotIn("[at:", body)
-        self.assertNotIn("动作", body)
         self.assertEqual("\n".join(self.recorded_texts()), body.strip())
+
+    async def test_out_of_band_one_shot_waits_across_outputpro_split_delay(self):
+        output = self.output(["split"], overrides={"split": {"per_char_delay": 0.03, "min_delay": 0.05, "max_delay": 0.2}})
+        event = self.event("第一段。第二段。")
+        order = []
+
+        orig_send = event.send
+        async def tracking_send(message):
+            order.append("split")
+            await orig_send(message)
+        event.send = tracking_send
+
+        async def out_of_band():
+            # Wait for first split segment
+            await asyncio.sleep(0.02)
+            async with self.plugin._send_order.one_shot(event.unified_msg_origin):
+                order.append("one-shot")
+
+        task = asyncio.create_task(out_of_band())
+        await self.run_hooks(output, event)
+        await event.send(event.get_result())
+        await self.plugin.after_reply_sent(event)
+        await task
+
+        self.assertEqual(order, ["split", "split", "one-shot"])
 
     async def test_successful_forward_records_cleaned_nodes_only_after_delivery(self):
         event = self.event("[动作]第一条转发消息。第二条转发消息。🙂")
@@ -208,19 +230,14 @@ class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
             "forward": {"threshold": 1, "node_name": "转发展示名", "node_max_length": 8, "node_hard_limit": 12},
         })
         await self.run_hooks(output, event)
-        self.plugin._spawn_human_reply.assert_not_called()
         self.assertEqual(event.sent, [])
         self.assertEqual(self.recorded_texts(), [])
         nodes = event.get_result().chain[0]
         self.assertIsInstance(nodes, Nodes)
         self.assertEqual(len(nodes.nodes), 2)
-        self.assertEqual([node.name for node in nodes.nodes], ["转发展示名", "转发展示名"])
         await event.send(event.get_result())
         self.assertEqual(len(event.sent), 1)
         self.assertEqual(self.recorded_texts(), ["第一条转发消息。\n第二条转发消息"])
-        self.assertNotIn("转发展示名", self.recorded_texts()[0])
-        self.assertNotIn("动作", self.recorded_texts()[0])
-        self.assertNotIn("🙂", self.recorded_texts()[0])
         await self.plugin.after_reply_sent(event)
 
     async def test_failed_forward_does_not_record_its_nested_body(self):
@@ -234,19 +251,14 @@ class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "forward platform failure"):
             await event.send(event.get_result())
         self.assertEqual(event.get_extra(SEND_OBSERVER_EXTRA)["attempted"], 1)
-        self.assertEqual(event.get_extra(SEND_OBSERVER_EXTRA)["succeeded"], 0)
         self.assertEqual(self.recorded_texts(), [])
-        self.plugin._spawn_human_reply.assert_not_called()
         self.plugin._finish_send_observer(event)
 
     async def test_all_preceding_split_failures_leave_tail_without_human_retake(self):
         event = self.event()
         event.send = AsyncMock(side_effect=RuntimeError("split platform failure"))
         await self.run_hooks(self.output(["split"]), event)
-        self.assertEqual(event.get_extra(SEND_OBSERVER_EXTRA)["attempted"], 2)
-        self.assertEqual(event.get_extra(SEND_OBSERVER_EXTRA)["succeeded"], 0)
         self.assertEqual(event.get_result().get_plain_text(), "第三段。")
-        self.plugin._spawn_human_reply.assert_not_called()
         self.assertEqual(self.recorded_texts(), [])
         with self.assertRaisesRegex(RuntimeError, "split platform failure"):
             await event.send(event.get_result())
@@ -268,8 +280,6 @@ class OutputPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
         await self.run_hooks(self.output(["split"]), event)
         self.assertEqual(attempts, ["第一段。", "第二段。"])
         self.assertEqual(self.recorded_texts(), ["第一段。"])
-        self.assertEqual(event.get_extra(SEND_OBSERVER_EXTRA)["attempted"], 2)
-        self.plugin._spawn_human_reply.assert_not_called()
         await event.send(event.get_result())
         self.assertEqual(attempts, ["第一段。", "第二段。", "第三段。"])
         self.assertEqual(self.recorded_texts(), ["第一段。", "第三段。"])

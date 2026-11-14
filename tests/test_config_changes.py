@@ -125,13 +125,13 @@ class ConfigCompatibilityTest(unittest.TestCase):
             self.assertFalse(list(directory.glob(".*.tmp-*")))
 
     def test_runtime_preserves_historical_finite_values_but_reports_limits(self):
-        raw = {"human_reply_chars_per_minute": 10_000_000, "window_seconds": 0}
+        raw = {"activity_buffer_max_text_chars": 10_000_000, "window_seconds": 0}
         runtime, errors = normalize_config(raw, SCHEMA, runtime=True)
-        self.assertEqual(runtime["human_reply_chars_per_minute"], 10_000_000)
+        self.assertEqual(runtime["activity_buffer_max_text_chars"], 10_000_000)
         self.assertEqual(runtime["window_seconds"], 0)
-        self.assertIn("human_reply_chars_per_minute", errors)
+        self.assertIn("activity_buffer_max_text_chars", errors)
         self.assertIn("window_seconds", errors)
-        self.assertEqual(raw, {"human_reply_chars_per_minute": 10_000_000, "window_seconds": 0})
+        self.assertEqual(raw, {"activity_buffer_max_text_chars": 10_000_000, "window_seconds": 0})
 
     def test_nonfinite_values_never_reach_runtime(self):
         for bad in [float("nan"), float("inf"), "-Infinity", "NaN"]:
@@ -181,7 +181,7 @@ class ConfigApiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(plugin.applies, 0)
 
     async def test_invalid_range_time_and_fractional_integer_are_rejected(self):
-        for key, value in [("human_reply_max_length", -1), ("trigger_rounds", 2.5),
+        for key, value in [("proactive_max_pending_per_person", -1), ("trigger_rounds", 2.5),
                            ("proactive_quiet_hours_start", "24:00"), ("proactive_quiet_hours_end", "08:60"),
                            ("debounce_fast_idle_seconds", float("inf"))]:
             with self.subTest(key=key), tempfile.TemporaryDirectory() as tmp:

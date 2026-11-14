@@ -17,13 +17,11 @@ from astrbot.core.provider.entities import ProviderRequest
 from main import (
     ActivityEntry,
     DISPLAY_NAME,
-    HumanReplyState,
     MergeSession,
     PILImage,
     NuoxiaomiaoPlugin,
     RunState,
     SELF_WAKE_EVENT_EXTRA,
-    _split_reply_text,
 )
 from config_support import CURRENT_CONFIG_NAME, LEGACY_CONFIG_NAME
 from scripts.migrate_config import migrate_config
@@ -240,8 +238,11 @@ _TEST_DB_COUNTER = itertools.count()
 
 
 def make_plugin(context=None, **cfg):
+    idx = next(_TEST_DB_COUNTER)
+    data_dir = Path(_TEST_RUNTIME_DIR.name) / f"plugin_data_{idx}"
+    data_dir.mkdir(parents=True, exist_ok=True)
     base = {
-        "activity_db_path": str(Path(_TEST_RUNTIME_DIR.name) / f"activity_{next(_TEST_DB_COUNTER)}.db"),
+        "activity_db_path": str(Path(_TEST_RUNTIME_DIR.name) / f"activity_{idx}.db"),
         "trigger_rounds": 3,
         "meme_tags": [],
         "meme_cooldown_seconds": 0,
@@ -251,7 +252,11 @@ def make_plugin(context=None, **cfg):
         "force_wake_prefix": "小喵",
     }
     base.update(cfg)
-    return NuoxiaomiaoPlugin(context or FakeContext(), base)
+    plugin = NuoxiaomiaoPlugin(context or FakeContext(), base)
+    plugin._plugin_data_dir = lambda d=data_dir: (d.mkdir(parents=True, exist_ok=True) or d)
+    if "merge_localize_images_dir" not in cfg:
+        plugin.merge_localize_images_dir = plugin._resolve_localize_images_dir()
+    return plugin
 
 
 class GuardLogicTest(unittest.IsolatedAsyncioTestCase):
@@ -3016,14 +3021,16 @@ class ProactiveGuardTest(unittest.IsolatedAsyncioTestCase):
             context=context, proactive_daily_limit_per_person=2
         )
         row = self._row(plugin)
-        # 预置今天已经发过 2 次
+        # 预置今天已经发过 2 次；用当前时刻写入，避免在午夜前后跑测试时
+        # done_ts 落到昨天、每日上限判定不到（跨天 flaky）。
+        now = time.time()
         conn = plugin._get_activity_db()
         for _ in range(2):
             conn.execute(
                 "INSERT INTO proactive_pending (created_ts, fire_ts, done_ts,"
                 " target_kind, target_id, target_umo, status)"
                 " VALUES (?, ?, ?, 'private', '10001', 'x', 'fired')",
-                (time.time() - 100, time.time() - 100, time.time() - 100),
+                (now, now, now),
             )
         conn.commit()
 
@@ -4217,405 +4224,6 @@ async def _await_until(predicate, timeout=3.0):
     return predicate()
 
 
-class SplitReplyTextTest(unittest.TestCase):
-    """拆条规则：中文标点断句、成对符号/URL/颜文字保护、硬切兜底。"""
-
-    def test_comma_and_period_break_without_punctuation(self):
-        segments = _split_reply_text("好的，那我先把文件整理一下。整理完叫你。")
-        self.assertEqual(segments, ["好的", "那我先把文件整理一下", "整理完叫你"])
-
-    def test_ascii_punctuation_never_breaks(self):
-        text = "你打开 server.ts 看看 v1.2 的配置，网址是 https://example.com/a.b 哦。"
-        segments = _split_reply_text(text)
-        self.assertEqual(len(segments), 2)
-        self.assertIn("server.ts", segments[0])
-        self.assertIn("v1.2", segments[0])
-        self.assertIn("https://example.com/a.b", segments[1])
-
-    def test_brackets_keep_together(self):
-        text = "（括号里的内容，包括逗号）不该被拆开"
-        self.assertEqual(_split_reply_text(text), [text])
-
-    def test_unbalanced_bracket_never_splits(self):
-        text = "(没闭合的括号，里面还有逗号，反正不拆"
-        self.assertEqual(_split_reply_text(text), [text])
-
-    def test_kaomoji_protected(self):
-        segments = _split_reply_text("开心 (＾▽＾) 得不行，真的吗？")
-        self.assertTrue(any("(＾▽＾)" in s for s in segments))
-        for segment in segments:
-            self.assertNotIn("\u200b", segment)
-
-    def test_codeblock_protected(self):
-        segments = _split_reply_text("代码是```a,b\nc```这样。还有一句。")
-        self.assertEqual(
-            segments, ["代码是```a,b\nc```这样", "还有一句"]
-        )
-
-    def test_short_text_not_split(self):
-        self.assertEqual(_split_reply_text("嗯！"), ["嗯！"])
-
-    def test_double_ellipsis_merges_into_previous(self):
-        segments = _split_reply_text("我觉着吧……这事得从长计议")
-        self.assertEqual(segments, ["我觉着吧……", "这事得从长计议"])
-
-    def test_hard_chunk_splits_long_unpunctuated_text(self):
-        segments = _split_reply_text("啊" * 200)
-        self.assertGreater(len(segments), 1)
-        for segment in segments:
-            self.assertLessEqual(len(segment), 61)
-
-
-class HumanReplyTest(unittest.IsolatedAsyncioTestCase):
-    """拟人回复：接管清链、逐条发送、打断与「正在输入」。"""
-
-    def _plugin(self, **cfg):
-        cfg.setdefault("human_reply_enabled", True)
-        cfg.setdefault("human_reply_chars_per_minute", 10_000_000)  # 打字等待≈0，只测逻辑
-        return make_plugin(debounce_enabled=False, **cfg)
-
-    def _llm_result(self, *texts, extra=None):
-        from astrbot.core.message.message_event_result import (
-            MessageEventResult,
-            ResultContentType,
-        )
-
-        chain = [Plain(t) for t in texts]
-        if extra:
-            chain.extend(extra)
-        return MessageEventResult(
-            chain=chain, result_content_type=ResultContentType.LLM_RESULT
-        )
-
-    @staticmethod
-    def _plain_texts(messages):
-        texts = []
-        for message in messages:
-            for comp in message.chain:
-                if isinstance(comp, Plain):
-                    texts.append(comp.text)
-        return texts
-
-    async def test_takeover_clears_result_and_sends_bubbles(self):
-        plugin = self._plugin()
-        event = FakeEvent(
-            is_private=True,
-            session="aiocqhttp:FriendMessage:10001",
-            group_id="",
-            sender_id="10001",
-        )
-        event._result = self._llm_result("第一句话来了，第二句话也来。")
-
-        await plugin.on_decorating_result(event)
-        self.assertIsNone(event.get_result())
-        self.assertTrue(event.get_extra("_streaming_finished", False))
-
-        await _await_until(lambda: not plugin._human_reply_tasks)
-        self.assertEqual(
-            self._plain_texts(event.sent), ["第一句话来了", "第二句话也来"]
-        )
-        await plugin.terminate()
-
-    async def test_takeover_skipped_for_media_chain(self):
-        plugin = self._plugin()
-        event = FakeEvent(message_str="看图")
-        # At 出现在文本之后：不是前缀，说明链里有复杂组件，不接管。
-        event._result = self._llm_result("看这张图", extra=[At(qq="10001")])
-
-        await plugin.on_decorating_result(event)
-        self.assertIsNotNone(event.get_result())
-        self.assertEqual(event.sent, [])
-        await plugin.terminate()
-
-    async def test_takeover_skipped_when_disabled(self):
-        plugin = self._plugin(human_reply_enabled=False)
-        event = FakeEvent(
-            is_private=True,
-            session="aiocqhttp:FriendMessage:10001",
-            group_id="",
-            sender_id="10001",
-        )
-        event._result = self._llm_result("第一句话来了，第二句话也来。")
-
-        await plugin.on_decorating_result(event)
-        self.assertIsNotNone(event.get_result())
-        self.assertEqual(event.sent, [])
-        await plugin.terminate()
-
-    async def test_group_reply_keeps_at_prefix_on_first_bubble(self):
-        plugin = self._plugin()
-        event = FakeEvent(message_str="在吗")
-        event._result = self._llm_result("第一句话来了，第二句话也来。")
-        event._result.chain.insert(0, At(qq="10001"))
-
-        await plugin.on_decorating_result(event)
-        await _await_until(lambda: not plugin._human_reply_tasks)
-        self.assertEqual(len(event.sent), 2)
-        first = event.sent[0].chain
-        self.assertIsInstance(first[0], At)
-        self.assertEqual(str(first[0].qq), "10001")
-        await plugin.terminate()
-
-    async def test_interrupt_before_first_bubble_discards_all_and_notes(self):
-        # 阶段3（回复完未发送）：还没开口就打断，整条回复不发并记账。
-        plugin = self._plugin(human_reply_chars_per_minute=150)
-        event = FakeEvent(
-            is_private=True,
-            session="aiocqhttp:FriendMessage:10001",
-            group_id="",
-            sender_id="10001",
-        )
-        event._result = self._llm_result("第一句话，第二句话，第三句话")
-
-        await plugin.on_decorating_result(event)
-        await _await_until(lambda: bool(plugin._human_reply_tasks))
-        # 第一条气泡还在打字（约 0.8s）就打断：一条都不该发。
-        self.assertTrue(
-            plugin._interrupt_human_reply(event.unified_msg_origin, "10001")
-        )
-        # 记账发生在打断标记的那一刻，不能等打字任务自己醒来。
-        self.assertIn(event.unified_msg_origin, plugin._human_reply_interrupt_notes)
-        await _await_until(lambda: not plugin._human_reply_tasks)
-        self.assertEqual(self._plain_texts(event.sent), [])
-
-        umo = event.unified_msg_origin
-        entry = plugin._human_reply_interrupt_notes[umo]
-        self.assertFalse(entry["seen_any"])
-        req = ProviderRequest(system_prompt="人设")
-        plugin._maybe_inject_interrupt_note(event, req)
-        # 没开口的打断用「没发出去」的话术，不需要引用原文。
-        self.assertIn("没能发出去", req.system_prompt)
-        self.assertNotIn(umo, plugin._human_reply_interrupt_notes)
-        # 提示是一次性的：再注入不该有第二次。
-        req2 = ProviderRequest(system_prompt="人设")
-        plugin._maybe_inject_interrupt_note(event, req2)
-        self.assertNotIn("没能发出去", req2.system_prompt)
-        await plugin.terminate()
-
-    async def test_no_interrupt_after_first_bubble_sent(self):
-        # 阶段4（首条气泡已发到 QQ）：不允许打断，剩余气泡照常发完。
-        plugin = self._plugin(human_reply_chars_per_minute=600)
-        event = FakeEvent(
-            is_private=True,
-            session="aiocqhttp:FriendMessage:10001",
-            group_id="",
-            sender_id="10001",
-        )
-        event._result = self._llm_result("第一句话，第二句话，第三句话")
-
-        await plugin.on_decorating_result(event)
-        await _await_until(lambda: bool(plugin._human_reply_tasks))
-        states = next(iter(plugin._human_reply_tasks.values()))
-        state = states[0]
-        # 等第一条气泡真正发出去（每条约 0.3s 打字时间）。
-        await _await_until(lambda: state.sent_count >= 1)
-        self.assertFalse(
-            plugin._interrupt_human_reply(event.unified_msg_origin, "10001")
-        )
-        self.assertFalse(state.interrupted)
-        await _await_until(lambda: not plugin._human_reply_tasks, timeout=6.0)
-        self.assertEqual(
-            self._plain_texts(event.sent), ["第一句话", "第二句话", "第三句话"]
-        )
-        # 没打断就没有「未送达」，不该记账。
-        self.assertNotIn(
-            event.unified_msg_origin, plugin._human_reply_interrupt_notes
-        )
-        await plugin.terminate()
-
-    async def test_inflight_turn_aborted_by_new_message(self):
-        # 阶段2（已请求未回复完毕）：新消息把在飞的 LLM 回合直接停掉。
-        plugin = self._plugin()
-        inflight = FakeEvent(message_str="上一轮", is_trigger=False)
-        key = plugin._merge_key(inflight.unified_msg_origin, "10001")
-        plugin._turn_inflight[key] = inflight
-
-        # 另一个会话里已停止的登记：不会被再次动作，也不影响别的回合。
-        stopped = FakeEvent(
-            message_str="已停", is_trigger=False,
-            session="aiocqhttp:GroupMessage:20002", group_id="20002",
-        )
-        stopped.stop_event()
-        stopped_key = plugin._merge_key(stopped.unified_msg_origin, "10001")
-        plugin._turn_inflight[stopped_key] = stopped
-
-        await plugin.on_message(FakeEvent(message_str="插话"))
-        self.assertTrue(inflight.stopped)
-        # 中止后登记保留（已是停止态，重复中止是 no-op），
-        # 等该轮 on_llm_response 到来时再清除。
-        self.assertIs(plugin._turn_inflight.get(key), inflight)
-        # 已停止的登记不会被再次动作，也不报错。
-        self.assertTrue(stopped.stopped)
-        self.assertIn(stopped_key, plugin._turn_inflight)
-        await plugin.terminate()
-
-    async def test_on_llm_response_clears_inflight_registration(self):
-        plugin = self._plugin()
-        event = FakeEvent(
-            is_private=True,
-            session="aiocqhttp:FriendMessage:10001",
-            group_id="",
-            sender_id="10001",
-            message_id="mid-clear",
-        )
-        key = plugin._merge_key(event.unified_msg_origin, "10001")
-        plugin._turn_inflight[key] = event
-        plugin._activity_buffer_enabled = False
-
-        await plugin.on_llm_response(event, SimpleNamespace(
-            completion_text="回复", tools_call_name=None
-        ))
-        self.assertNotIn(key, plugin._turn_inflight)
-        await plugin.terminate()
-
-    async def test_on_message_interrupts_active_typing(self):
-        plugin = self._plugin()
-        event = FakeEvent(message_str="插话")
-        state = HumanReplyState()
-        plugin._human_reply_tasks[plugin._merge_key(
-            event.unified_msg_origin, "10001"
-        )] = [state]
-
-        await plugin.on_message(event)
-        self.assertTrue(state.interrupted)
-        await plugin.terminate()
-
-    async def test_typing_status_for_private_chat(self):
-        plugin = self._plugin()
-        event = FakeEvent(
-            is_private=True,
-            session="aiocqhttp:FriendMessage:10001",
-            group_id="",
-            sender_id="10001",
-        )
-        call_action = AsyncMock(return_value=None)
-        event.bot = SimpleNamespace(api=SimpleNamespace(call_action=call_action))
-        event._result = self._llm_result("第一句话来了，第二句话也来。")
-
-        await plugin.on_decorating_result(event)
-        await _await_until(lambda: not plugin._human_reply_tasks)
-        self.assertEqual(
-            self._plain_texts(event.sent), ["第一句话来了", "第二句话也来"]
-        )
-        calls = [
-            dict(c.kwargs or {}) | {"_positional": c.args}
-            for c in call_action.await_args_list
-        ]
-        actions = [c["_positional"][0] if c["_positional"] else None for c in calls]
-        self.assertIn("set_input_status", actions)
-        event_types = {c.get("event_type") for c in calls}
-        self.assertIn(1, event_types)
-        self.assertIn(2, event_types)
-        await plugin.terminate()
-
-    async def test_typing_status_skipped_for_group_and_failures_are_silent(self):
-        plugin = self._plugin()
-        event = FakeEvent(message_str="在吗")
-        call_action = AsyncMock(side_effect=RuntimeError("炸了"))
-        event.bot = SimpleNamespace(api=SimpleNamespace(call_action=call_action))
-        event._result = self._llm_result("第一句话来了，第二句话也来。")
-
-        await plugin.on_decorating_result(event)
-        await _await_until(lambda: not plugin._human_reply_tasks)
-        # 群聊根本不该调 set_input_status。
-        call_action.assert_not_awaited()
-        self.assertEqual(
-            self._plain_texts(event.sent), ["第一句话来了", "第二句话也来"]
-        )
-
-        # 私聊调用失败也静默：正文照发。
-        private = FakeEvent(
-            is_private=True,
-            session="aiocqhttp:FriendMessage:10001",
-            group_id="",
-            sender_id="10001",
-        )
-        private.bot = SimpleNamespace(
-            api=SimpleNamespace(call_action=AsyncMock(side_effect=RuntimeError("x")))
-        )
-        private._result = self._llm_result("第一句话来了，第二句话也来。")
-        await plugin.on_decorating_result(private)
-        await _await_until(lambda: not plugin._human_reply_tasks)
-        self.assertEqual(
-            self._plain_texts(private.sent), ["第一句话来了", "第二句话也来"]
-        )
-        await plugin.terminate()
-
-    async def test_send_failure_midway_records_partial_note(self):
-        plugin = self._plugin()
-        event = FakeEvent(
-            is_private=True,
-            session="aiocqhttp:FriendMessage:10001",
-            group_id="",
-            sender_id="10001",
-        )
-        event._result = self._llm_result("第一句话来了，第二句话也来。")
-        original_send = event.send
-
-        async def flaky_send(message):
-            if len(event.sent) >= 1:
-                raise RuntimeError("网络炸了")
-            await original_send(message)
-
-        event.send = flaky_send
-
-        await plugin.on_decorating_result(event)
-        await _await_until(lambda: not plugin._human_reply_tasks)
-        # 第二条气泡发送失败：只发出一条，且必须记账让下一轮知道。
-        self.assertEqual(self._plain_texts(event.sent), ["第一句话来了"])
-        note = plugin._human_reply_interrupt_notes.get(event.unified_msg_origin)
-        self.assertIsNotNone(note)
-        self.assertTrue(note["seen_any"])
-        self.assertIn("第二句话也来", "\n".join(note["chunks"]))
-        await plugin.terminate()
-
-    async def test_concurrent_takeovers_send_in_order(self):
-        # AstrNa 并发回复/连续多轮问答会产生同会话多个接管任务：
-        # 必须排队逐条说，气泡不许交叉乱序。
-        plugin = self._plugin(human_reply_chars_per_minute=600)
-        order = []
-
-        def recorder(tag):
-            async def _send(message):
-                text = "".join(
-                    c.text for c in message.chain if isinstance(c, Plain)
-                )
-                order.append((tag, text))
-
-            return _send
-
-        first = FakeEvent(
-            is_private=True,
-            session="aiocqhttp:FriendMessage:10001",
-            group_id="",
-            sender_id="10001",
-        )
-        first._result = self._llm_result("第一条消息来了，第一条结束。")
-        first.send = recorder("A")
-        second = FakeEvent(
-            is_private=True,
-            session="aiocqhttp:FriendMessage:10001",
-            group_id="",
-            sender_id="10001",
-        )
-        second._result = self._llm_result("第二条消息到了，第二条结束。")
-        second.send = recorder("B")
-
-        await plugin.on_decorating_result(first)
-        await plugin.on_decorating_result(second)
-        await _await_until(lambda: not plugin._human_reply_tasks, timeout=6.0)
-        self.assertEqual(
-            order,
-            [
-                ("A", "第一条消息来了"),
-                ("A", "第一条结束"),
-                ("B", "第二条消息到了"),
-                ("B", "第二条结束"),
-            ],
-        )
-        await plugin.terminate()
-
-
 class EventSpanCloseTest(unittest.IsolatedAsyncioTestCase):
     """被拦下的事件要补收尾 trace：观察面板按 span 重建会话，不收尾会挂着。"""
 
@@ -4686,7 +4294,7 @@ class GroupScopeTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(allows("1", "猫群", {"猫群"}, {"1"}))
 
     async def test_private_chat_unaffected(self):
-        plugin = self._plugin(human_reply_group_blacklist=["10001"])
+        plugin = self._plugin(guard_group_blacklist=["10001"])
         event = FakeEvent(
             is_private=True,
             session="aiocqhttp:FriendMessage:10001",
@@ -4697,8 +4305,8 @@ class GroupScopeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             plugin._event_group_allowed(
                 event,
-                plugin.human_reply_group_whitelist,
-                plugin.human_reply_group_blacklist,
+                plugin.guard_group_whitelist,
+                plugin.guard_group_blacklist,
             )
         )
 
@@ -4720,28 +4328,6 @@ class GroupScopeTest(unittest.IsolatedAsyncioTestCase):
         outside = FakeEvent(message_str="短句")
         await whitelisted.on_message(outside)
         self.assertFalse(outside.stopped)
-
-    async def test_human_reply_skips_blacklisted_group(self):
-        from astrbot.core.message.message_event_result import (
-            MessageEventResult,
-            ResultContentType,
-        )
-
-        plugin = self._plugin(
-            human_reply_enabled=True,
-            human_reply_chars_per_minute=10_000_000,
-            human_reply_group_blacklist=["20001"],
-        )
-        event = FakeEvent(message_str="在吗")
-        event._result = MessageEventResult(
-            chain=[Plain("第一句话来了，第二句话也来。")],
-            result_content_type=ResultContentType.LLM_RESULT,
-        )
-
-        await plugin.on_decorating_result(event)
-        self.assertIsNotNone(event.get_result())
-        self.assertEqual(event.sent, [])
-        await plugin.terminate()
 
     async def test_guard_scope_respects_group_lists(self):
         event = FakeEvent(message_str="x", is_trigger=True)

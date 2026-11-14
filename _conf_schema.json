@@ -34,21 +34,21 @@
     "description": "【消息合并】用户白名单",
     "type": "list",
     "default": [],
-    "hint": "用户 ID；留空=全部。",
+    "hint": "用户 ID（QQ 官方填 openid）；留空=全部。",
     "group": "消息合并"
   },
   "debounce_group_whitelist": {
     "description": "【消息合并】群白名单",
     "type": "list",
     "default": [],
-    "hint": "群号/群名；留空=不限。",
+    "hint": "群号/群名（QQ 官方请填群 openid）；留空=不限。",
     "group": "消息合并"
   },
   "debounce_group_blacklist": {
     "description": "【消息合并】群黑名单",
     "type": "list",
     "default": [],
-    "hint": "群号/群名；优先于白名单。",
+    "hint": "群号/群名（QQ 官方请填群 openid）；优先于白名单。",
     "group": "消息合并"
   },
   "debounce_fast_idle_seconds": {
@@ -175,76 +175,6 @@
     "hint": "避免等待期间图片链接失效。",
     "group": "消息合并"
   },
-  "human_reply_enabled": {
-    "description": "【回复节奏】分条回复",
-    "type": "bool",
-    "default": false,
-    "group": "回复节奏"
-  },
-  "human_reply_chars_per_minute": {
-    "description": "【回复节奏】打字速度（字/分）",
-    "type": "int",
-    "default": 240,
-    "hint": "越小越像真人，等待也越久。",
-    "slider": {
-      "min": 10,
-      "max": 600,
-      "step": 10
-    },
-    "group": "回复节奏"
-  },
-  "human_reply_interrupt_enabled": {
-    "description": "【回复节奏】插话中止",
-    "type": "bool",
-    "default": true,
-    "hint": "已开口的回复会发完。",
-    "group": "回复节奏"
-  },
-  "human_reply_show_input_status": {
-    "description": "【回复节奏】显示「正在输入」",
-    "type": "bool",
-    "default": true,
-    "hint": "仅私聊（NapCat）。",
-    "group": "回复节奏"
-  },
-  "human_reply_max_wait_seconds": {
-    "description": "【回复节奏】单条最长等待（秒）",
-    "type": "float",
-    "default": 20,
-    "hint": "防止单条气泡等太久。",
-    "slider": {
-      "min": 1,
-      "max": 60,
-      "step": 1
-    },
-    "group": "回复节奏"
-  },
-  "human_reply_max_length": {
-    "description": "【回复节奏】接管字数上限",
-    "type": "int",
-    "default": 300,
-    "hint": "0=不限；图片、转发、流式不接管。",
-    "slider": {
-      "min": 0,
-      "max": 2000,
-      "step": 50
-    },
-    "group": "回复节奏"
-  },
-  "human_reply_group_whitelist": {
-    "description": "【回复节奏】群白名单",
-    "type": "list",
-    "default": [],
-    "hint": "群号/群名；留空=不限。",
-    "group": "回复节奏"
-  },
-  "human_reply_group_blacklist": {
-    "description": "【回复节奏】群黑名单",
-    "type": "list",
-    "default": [],
-    "hint": "群号/群名；优先于白名单。",
-    "group": "回复节奏"
-  },
   "trigger_rounds": {
     "description": "【拦截与互动】连刷轮数",
     "type": "int",
@@ -311,49 +241,49 @@
     "description": "【拦截与互动】被戳回应白名单",
     "type": "list",
     "default": [],
-    "hint": "群号/群名；留空=不限。",
+    "hint": "群号/群名（QQ 官方请填群 openid）；留空=不限。",
     "group": "拦截与互动"
   },
   "poke_group_blacklist": {
     "description": "【拦截与互动】被戳回应黑名单",
     "type": "list",
     "default": [],
-    "hint": "群号/群名；优先于白名单。",
+    "hint": "群号/群名（QQ 官方请填群 openid）；优先于白名单。",
     "group": "拦截与互动"
   },
   "blocked_users": {
     "description": "【拦截与互动】屏蔽用户",
     "type": "list",
     "default": [],
-    "hint": "不回复其消息与指令。",
+    "hint": "不回复其消息与指令；QQ 官方填 openid。",
     "group": "拦截与互动"
   },
   "user_whitelist": {
     "description": "【拦截与互动】连刷豁免用户",
     "type": "list",
     "default": [],
-    "hint": "仅豁免刷屏拦截。",
+    "hint": "仅豁免刷屏拦截；QQ 官方填 openid。",
     "group": "拦截与互动"
   },
   "user_blacklist": {
     "description": "【拦截与互动】连刷检测用户",
     "type": "list",
     "default": [],
-    "hint": "留空检测全部。",
+    "hint": "留空检测全部；QQ 官方填 openid。",
     "group": "拦截与互动"
   },
   "guard_group_whitelist": {
     "description": "【拦截与互动】刷屏拦截白名单",
     "type": "list",
     "default": [],
-    "hint": "群号/群名；留空=不限。",
+    "hint": "群号/群名（QQ 官方请填群 openid）；留空=不限。",
     "group": "拦截与互动"
   },
   "guard_group_blacklist": {
     "description": "【拦截与互动】刷屏拦截黑名单",
     "type": "list",
     "default": [],
-    "hint": "群号/群名；优先于白名单。",
+    "hint": "群号/群名（QQ 官方请填群 openid）；优先于白名单。",
     "group": "拦截与互动"
   },
   "meme_tags": {
@@ -396,14 +326,14 @@
     "description": "【拦截与互动】关键词唤醒白名单",
     "type": "list",
     "default": [],
-    "hint": "群号/群名；留空=不限。",
+    "hint": "群号/群名（QQ 官方请填群 openid）；留空=不限。",
     "group": "拦截与互动"
   },
   "keyword_wake_group_blacklist": {
     "description": "【拦截与互动】关键词唤醒黑名单",
     "type": "list",
     "default": [],
-    "hint": "群号/群名；优先于白名单。",
+    "hint": "群号/群名（QQ 官方请填群 openid）；优先于白名单。",
     "group": "拦截与互动"
   },
   "activity_buffer_enabled": {
@@ -422,14 +352,14 @@
     "description": "【聊天记录与参考】记录群白名单",
     "type": "list",
     "default": [],
-    "hint": "群号/群名；留空=不限。",
+    "hint": "群号/群名（QQ 官方请填群 openid）；留空=不限。",
     "group": "聊天记录与参考"
   },
   "activity_group_blacklist": {
     "description": "【聊天记录与参考】记录群黑名单",
     "type": "list",
     "default": [],
-    "hint": "群号/群名；优先于白名单。",
+    "hint": "群号/群名（QQ 官方请填群 openid）；优先于白名单。",
     "group": "聊天记录与参考"
   },
   "activity_record_bot_replies": {
@@ -584,14 +514,14 @@
     "description": "【主动消息】允许的群",
     "type": "list",
     "default": [],
-    "hint": "留空=不允许任何群。",
+    "hint": "留空=不允许任何群；QQ 官方请填群 openid。",
     "group": "主动消息"
   },
   "proactive_target_whitelist": {
     "description": "【主动消息】私聊白名单",
     "type": "list",
     "default": [],
-    "hint": "主人/管理员始终允许。",
+    "hint": "主人/管理员始终允许；QQ 官方请填用户 openid。",
     "group": "主动消息"
   },
   "proactive_max_pending_per_person": {
@@ -750,7 +680,7 @@
     "description": "【QQ 官方】QQ官方适配",
     "type": "bool",
     "default": true,
-    "hint": "识别到 QQ 官方机器人平台时启用下面的适配规则（合成消息投递、纯文本、分条上限等）。",
+    "hint": "识别到 QQ 官方机器人平台时启用下面的适配规则（合成消息投递、纯文本、转发展开等）。",
     "group": "QQ 官方"
   },
   "qq_official_content_mode": {
@@ -759,30 +689,6 @@
     "default": true,
     "hint": "关闭 markdown，统一发普通文本：QQ 官方群多数没有 markdown 权限，开着更容易发送失败或消耗主动消息配额。",
     "group": "QQ 官方"
-  },
-  "qq_official_max_bubbles": {
-    "description": "【QQ 官方】分条上限",
-    "type": "int",
-    "default": 4,
-    "hint": "拟人回复最多分几条。QQ 官方被动回复复用同一条消息 ID，条数受平台限制，超出部分会合并进最后一条。0=不限。",
-    "group": "QQ 官方",
-    "slider": {
-      "min": 0,
-      "max": 10,
-      "step": 1
-    }
-  },
-  "qq_official_passive_window_seconds": {
-    "description": "【QQ 官方】回复窗口预算(秒)",
-    "type": "int",
-    "default": 240,
-    "hint": "QQ 官方被动回复有效期 5 分钟。打字等待累计超过这个预算后，剩下的内容一次性立即发完，避免超窗失败。",
-    "group": "QQ 官方",
-    "slider": {
-      "min": 30,
-      "max": 300,
-      "step": 10
-    }
   },
   "qq_official_group_proactive": {
     "description": "【QQ 官方】允许群聊主动消息",
@@ -796,6 +702,39 @@
     "type": "bool",
     "default": true,
     "hint": "把正文里残留的 <qqbot-at-user id=…/> 标记清掉，避免关键词唤醒/速览/模型上下文里出现原始标记。",
+    "group": "QQ 官方"
+  },
+  "qq_official_admin_openids": {
+    "description": "【QQ 官方】管理员 openid",
+    "type": "list",
+    "default": [],
+    "hint": "管理员用户 openid（每行一个），用于速览工具、主动私聊与自醒权限。",
+    "group": "QQ 官方"
+  },
+  "qq_official_quote_trigger": {
+    "description": "【QQ 官方】引用消息唤醒",
+    "type": "bool",
+    "default": true,
+    "hint": "群里引用机器人自己最近发过的话时，按对话触发处理。",
+    "group": "QQ 官方"
+  },
+  "qq_official_text_chars": {
+    "description": "【QQ 官方】单条纯文本上限",
+    "type": "int",
+    "default": 2000,
+    "hint": "超过上限的纯文本自动分段；0=不限。",
+    "group": "QQ 官方",
+    "slider": {
+      "min": 0,
+      "max": 4000,
+      "step": 100
+    }
+  },
+  "qq_official_flatten_forward": {
+    "description": "【QQ 官方】转发消息展开",
+    "type": "bool",
+    "default": true,
+    "hint": "QQ 官方不支持合并转发，开启后将 Node/Nodes 展开为普通文本和图片。",
     "group": "QQ 官方"
   },
   "force_wake_prefix": {
@@ -864,10 +803,10 @@
     "group": "高级"
   },
   "resident_inbox_enabled": {
-    "description": "【聊天记录与参考】未读信箱",
+    "description": "【聊天记录与参考】信箱数据层（未读计数与已读标记）",
     "type": "bool",
     "default": true,
-    "hint": "按实际阅读标记已读。",
+    "hint": "记录谁看过哪些消息；关掉后未读恒为 0、通知卡不起作用。",
     "group": "聊天记录与参考"
   },
   "resident_state_enabled": {
@@ -937,38 +876,38 @@
     "group": "共享记忆与信箱"
   },
   "unread_inbox_enabled": {
-    "description": "【共享记忆与信箱】未读信箱",
+    "description": "【共享记忆与信箱】未读信箱分流（群里未点名不回复）",
     "type": "bool",
     "default": false,
-    "hint": "未点名的群消息静默收进信箱。",
+    "hint": "未点名的群消息静默收进信箱；需要先开启「记录聊天」。",
     "group": "共享记忆与信箱"
   },
   "inbox_group_whitelist": {
     "description": "【共享记忆与信箱】信箱群白名单",
     "type": "list",
     "default": [],
-    "hint": "群号/群名；留空=不限。",
+    "hint": "群号/群名（QQ 官方请填群 openid）；留空=不限。分流只在记录范围内生效。",
     "group": "共享记忆与信箱"
   },
   "inbox_group_blacklist": {
     "description": "【共享记忆与信箱】信箱群黑名单",
     "type": "list",
     "default": [],
-    "hint": "群号/群名；优先于白名单。",
+    "hint": "群号/群名（QQ 官方请填群 openid）；优先于白名单。",
     "group": "共享记忆与信箱"
   },
   "mention_notice_enabled": {
     "description": "【共享记忆与信箱】点名通知卡",
     "type": "bool",
     "default": false,
-    "hint": "唤醒时附带未读与近况。",
+    "hint": "唤醒时附带未读与近况；只把卡片展示过的几条标为已读。",
     "group": "共享记忆与信箱"
   },
   "mention_notice_limit": {
     "description": "【共享记忆与信箱】通知卡条数",
     "type": "int",
     "default": 20,
-    "hint": "最多带多少条。",
+    "hint": "卡片最多带多少条；也就是一次最多标记已读多少条。",
     "group": "共享记忆与信箱",
     "slider": {
       "min": 1,
@@ -980,7 +919,7 @@
     "description": "【共享记忆与信箱】话题概括",
     "type": "bool",
     "default": false,
-    "hint": "用轻量模型压成一句话题。",
+    "hint": "用轻量模型压成一句话题；需要先开启「记录聊天」。",
     "group": "共享记忆与信箱"
   },
   "topic_light_provider_id": {
@@ -1066,7 +1005,7 @@
     "description": "【共享记忆与信箱】补段条数",
     "type": "int",
     "default": 5,
-    "hint": "往前补多少条上下文。",
+    "hint": "除本段外多带多少条后续消息做衔接（不推进游标）。",
     "group": "共享记忆与信箱",
     "slider": {
       "min": 0,
@@ -1092,7 +1031,7 @@
     "description": "【共享记忆与信箱】图片保留天数",
     "type": "int",
     "default": 3,
-    "hint": "到期清理。",
+    "hint": "到期清理；填 0 按至少保留 1 天处理（不会一次删光）。",
     "group": "共享记忆与信箱",
     "slider": {
       "min": 0,

@@ -1,5 +1,4 @@
 import unittest
-from types import SimpleNamespace
 
 from astrbot.core.provider.entities import ProviderRequest
 

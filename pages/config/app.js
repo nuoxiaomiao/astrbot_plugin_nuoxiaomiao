@@ -29,15 +29,14 @@
   var GROUP_META = [
     { id: 'overview', title: '总览', note: '插件总开关。关闭后所有功能暂停，设置保留。' },
     { id: 'debounce', title: '消息合并', note: '同一人连发的消息合并后回复。' },
-    { id: 'human_reply', title: '回复节奏', note: '按打字速度分条发送回复。' },
     { id: 'interaction', title: '拦截与互动', note: '刷屏拦截、屏蔽名单、被戳与关键词回应。' },
     { id: 'activity', title: '聊天记录与参考', note: '记录近期聊天，供回忆、跨会话查看与记忆检索。' },
     { id: 'proactive', title: '主动消息', note: '只在允许名单内生效，有次数与冷却限制。' },
     { id: 'selfwake', title: '自醒', note: '群里安静时自动醒来思考，每天有次数上限。' },
-    { id: 'qq_official', title: 'QQ 官方', note: 'QQ 官方机器人平台的专用适配：合成消息投递、纯文本、分条与窗口控制。' },
+    { id: 'qq_official', title: 'QQ 官方', note: 'QQ 官方机器人平台的专用适配：合成消息投递、纯文本、转发展开与唤醒控制。' },
     { id: 'advanced', title: '高级', note: '工具提示词、能力说明与兼容参数，通常保持默认。' },
     { id: 'resident_state', title: '自主状态', note: '自主运行时的心情、关注点与表达风格（管理入口在“运行与状态”）。' },
-    { id: 'shared_memory', title: '共享记忆与信箱', note: '四项进阶能力，默认关闭：主脑、未读信箱、话题概括、群聊识图。' },
+    { id: 'shared_memory', title: '共享记忆与信箱', note: '四项进阶能力，默认关闭：主脑、未读信箱、话题概括、群聊识图（信箱与话题需要先开启「记录聊天」）。' },
   ];
   function deriveGroups(schema) {
     var metaByTitle = {}, byTitle = {}, result = [];
@@ -78,10 +77,6 @@
         'debounce_end_punctuation', 'debounce_max_parts', 'merge_idle_seconds',
         'merge_max_total_seconds', 'merge_join_separator', 'merge_localize_images', 'merge_localize_images_dir'],
       lists: ['debounce_user_whitelist', 'debounce_group_whitelist', 'debounce_group_blacklist'] },
-    { id: 'human_reply', title: '分条回复', gates: ['human_reply_enabled'],
-      children: ['human_reply_chars_per_minute', 'human_reply_interrupt_enabled', 'human_reply_show_input_status',
-        'human_reply_max_wait_seconds', 'human_reply_max_length'],
-      lists: ['human_reply_group_whitelist', 'human_reply_group_blacklist'] },
     { id: 'guard', title: '刷屏拦截', gates: ['include_group', 'include_private'],
       children: ['trigger_rounds', 'window_seconds', 'meme_tags', 'meme_cooldown_seconds'],
       lists: ['user_whitelist', 'user_blacklist', 'guard_group_whitelist', 'guard_group_blacklist'] },
@@ -125,9 +120,9 @@
         'vision_read_max_chars', 'vision_timeout_seconds', 'vision_cache_ttl_days'],
       lists: [] },
     { id: 'qq_official', title: 'QQ 官方适配', gates: ['qq_official_enabled'],
-      children: ['qq_official_content_mode', 'qq_official_max_bubbles', 'qq_official_passive_window_seconds',
-        'qq_official_group_proactive', 'qq_official_strip_at_markup'],
-      lists: [] },
+      children: ['qq_official_content_mode', 'qq_official_group_proactive', 'qq_official_strip_at_markup',
+        'qq_official_quote_trigger', 'qq_official_text_chars', 'qq_official_flatten_forward'],
+      lists: ['qq_official_admin_openids'] },
     { id: 'tool_prompt', title: '自定义工具提示', gates: ['tool_call_prompt_enabled'],
       children: ['tool_call_prompt'], lists: [] },
   ];
