@@ -340,7 +340,6 @@ def make_plugin(context=None, **cfg) -> NuoxiaomiaoPlugin:
         "merge_enabled": True,
         "merge_idle_seconds": 4,
         "merge_max_total_seconds": 12,
-        "force_wake_prefix": "小喵",
     }
     if "merge_localize_images_dir" not in cfg:
         base["merge_localize_images_dir"] = str(data_dir / "merged_images")

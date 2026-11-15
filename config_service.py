@@ -22,6 +22,7 @@ if __package__:
         load_schema,
         normalize_config,
         schema_defaults,
+        strip_removed_config_keys,
     )
     from .infra.constants import DISPLAY_NAME, LEGACY_CUSTOM_TOOL_CALL_PROMPT, PLUGIN_NAME
     from .infra.runtime import plugin_name_of_tool, timezone_label
@@ -38,6 +39,7 @@ else:
         load_schema,
         normalize_config,
         schema_defaults,
+        strip_removed_config_keys,
     )
     from infra.constants import DISPLAY_NAME, LEGACY_CUSTOM_TOOL_CALL_PROMPT, PLUGIN_NAME
     from infra.runtime import plugin_name_of_tool, timezone_label
@@ -106,13 +108,13 @@ class ConfigService:
                 return None
             with path.open(encoding="utf-8-sig") as f:
                 data = json.load(f)
-            return fold_config_aliases(data) if isinstance(data, dict) and data else None
+            return strip_removed_config_keys(fold_config_aliases(data)) if isinstance(data, dict) and data else None
         except Exception as exc:
             logger.warning("[%s] 读取自定义默认配置失败: %s", DISPLAY_NAME, exc)
             return None
 
     def write_user_default(self, config: dict[str, Any]) -> dict[str, Any]:
-        snapshot = fold_config_aliases(config or {})
+        snapshot = strip_removed_config_keys(fold_config_aliases(config or {}))
         atomic_write_json(self.user_default_path(), snapshot)
         return snapshot
 
@@ -204,20 +206,6 @@ class ConfigService:
         if pid and pid not in {item["id"] for item in self.provider_catalog()}:
             diags.append({"code": "self_wake_provider_unavailable", "severity": "warning", "message": "指定的自醒模型当前不可用；请重新选择模型。", "fields": ["proactive_judge_provider_id"]})
         recording_on = bool(effective.get("activity_buffer_enabled"))
-        if effective.get("unread_inbox_enabled") and not recording_on:
-            diags.append({
-                "code": "inbox_requires_recording",
-                "severity": "warning",
-                "message": "未读信箱分流依赖「记录聊天」：当前记录已关闭，信箱既收不到内容、也不会生效（分流会自动跳过）。",
-                "fields": ["unread_inbox_enabled", "activity_buffer_enabled"],
-            })
-        if effective.get("topic_summary_enabled") and not recording_on:
-            diags.append({
-                "code": "topic_requires_recording",
-                "severity": "warning",
-                "message": "话题概括依赖「记录聊天」：当前记录已关闭，没有可概括的消息。",
-                "fields": ["topic_summary_enabled", "activity_buffer_enabled"],
-            })
         if effective.get("qq_official_enabled") and effective.get("qq_official_quote_trigger") and (not recording_on or not effective.get("activity_record_bot_replies")):
             diags.append({
                 "code": "qq_quote_requires_bot_history",
@@ -225,17 +213,10 @@ class ConfigService:
                 "message": "QQ 官方引用唤醒需要开启「记录聊天」与「记录机器人回复」，否则无法比对被引用消息是否出自机器人。",
                 "fields": ["qq_official_quote_trigger", "activity_buffer_enabled", "activity_record_bot_replies"],
             })
-        if effective.get("unread_inbox_enabled") and effective.get("inbox_group_whitelist") and not effective.get("activity_group_whitelist"):
-            diags.append({
-                "code": "inbox_scope_not_subset",
-                "severity": "info",
-                "message": "信箱只在这些群分流，但记录名单为空（等于记录全部）。分流需要先能记录，请确认这些群也在记录范围内。",
-                "fields": ["inbox_group_whitelist", "activity_group_whitelist"],
-            })
         return diags
 
     def validate_web_config(self, incoming: dict[str, Any], schema: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
-        merged = fold_config_aliases(dict(self.raw_config))
+        merged = strip_removed_config_keys(fold_config_aliases(dict(self.raw_config)))
         updates = fold_config_aliases(incoming)
         merged.update({key: value for key, value in updates.items() if key in schema})
         return normalize_config(merged, schema, include_defaults=True)
@@ -272,7 +253,7 @@ class ConfigService:
 
     def saved_response(self, schema: dict[str, Any]) -> dict[str, Any]:
         return json_safe_config({
-            "config": dict(self.raw_config),
+            "config": strip_removed_config_keys(dict(self.raw_config)),
             "effective_config": self.effective_config(schema),
             "diagnostics": self.diagnostics(schema),
         })
@@ -311,7 +292,7 @@ class ConfigService:
             {
                 "status": "ok",
                 "data": json_safe_config({
-                    "config": dict(self.raw_config),
+                    "config": strip_removed_config_keys(dict(self.raw_config)),
                     "schema": schema,
                     "defaults": schema_defaults(schema),
                     "user_default": self.load_user_default(),

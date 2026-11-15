@@ -37,23 +37,26 @@ class Run:
     effective: set | None = None
     request_day: str = ""
     limit_reason: str = ""
+    require_self_wake: bool = True
+    postponed: list = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.gate.set()
 
 
 class BudgetProvider:
-    def __init__(self, provider: Any, autonomy: Any, run: Run) -> None:
+    def __init__(self, provider: Any, autonomy: Any, run: Run, *, count_step: bool = True) -> None:
         self.provider = provider
         self.autonomy = autonomy
         self.run = run
+        self.count_step = bool(count_step)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.provider, name)
 
     async def text_chat(self, *args: Any, **kwargs: Any) -> Any:
         try:
-            await self.autonomy.before_request(self.run)
+            await self.autonomy.before_request(self.run, count_step=self.count_step)
         except BudgetExceeded as exc:
             self.run.limit_reason = str(exc)
             raise
@@ -72,7 +75,7 @@ class BudgetProvider:
 
     async def text_chat_stream(self, *args: Any, **kwargs: Any):
         try:
-            await self.autonomy.before_request(self.run)
+            await self.autonomy.before_request(self.run, count_step=self.count_step)
         except BudgetExceeded as exc:
             self.run.limit_reason = str(exc)
             raise

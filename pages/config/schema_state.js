@@ -33,13 +33,12 @@
     { id: 'overview', title: '总览', note: '插件总开关。关闭后所有功能暂停，设置保留。' },
     { id: 'debounce', title: '消息合并', note: '同一人连发的消息合并后回复。' },
     { id: 'interaction', title: '拦截与互动', note: '刷屏拦截、屏蔽名单、被戳与关键词回应。' },
-    { id: 'activity', title: '聊天记录与参考', note: '记录近期聊天，供回忆、跨会话查看与记忆检索。' },
+    { id: 'activity', title: '聊天记录与参考', note: '记录近期聊天，供跨会话查看与未读/已读统计。' },
     { id: 'proactive', title: '主动消息', note: '只在允许名单内生效，有次数与冷却限制。' },
     { id: 'selfwake', title: '自醒', note: '群里安静时自动醒来思考，每天有次数上限。' },
     { id: 'qq_official', title: 'QQ 官方', note: 'QQ 官方机器人平台的专用适配：合成消息投递、纯文本、转发展开与唤醒控制。' },
-    { id: 'advanced', title: '高级', note: '工具提示词、能力说明与兼容参数，通常保持默认。' },
-    { id: 'resident_state', title: '自主状态', note: '自主运行时的心情、关注点与表达风格（管理入口在“运行与状态”）。' },
-    { id: 'shared_memory', title: '共享记忆与信箱', note: '四项进阶能力，默认关闭：主脑、未读信箱、话题概括、群聊识图（信箱与话题需要先开启「记录聊天」）。' },
+    { id: 'advanced', title: '高级', note: '工具提示词、近况附带与记录库路径，通常保持默认。' },
+    { id: 'resident_state', title: '自主状态', note: '自主运行与聊天时的心情与关注点（管理入口在“运行与状态”）。' },
   ];
 
   var CLUSTERS = [
@@ -78,11 +77,6 @@
       lists: ['activity_group_whitelist', 'activity_group_blacklist'],
     },
     {
-      id: 'lmem', title: '长期记忆', gates: ['lmem_gateway_enabled'],
-      children: ['lmem_gateway_keywords', 'lmem_gateway_top_k', 'lmem_gateway_timeout_seconds', 'lmem_gateway_max_chars'],
-      lists: [],
-    },
-    {
       id: 'proactive', title: '主动消息', gates: ['proactive_enabled'],
       children: [
         'proactive_hint_enabled', 'proactive_max_pending_per_person', 'proactive_daily_limit_per_person',
@@ -99,25 +93,6 @@
         'proactive_silent_wake_daily_budget', 'proactive_silent_wake_max_steps',
         'proactive_silent_wake_allow_tools', 'resident_extra_tools',
         'resident_run_token_limit', 'resident_daily_token_limit',
-      ],
-      lists: [],
-    },
-    { id: 'shared_memory', title: '全局主脑', gates: ['shared_memory_enabled'], children: ['master_umo', 'master_auto_bind'], lists: [] },
-    { id: 'inbox', title: '未读信箱', gates: ['unread_inbox_enabled'], children: [], lists: ['inbox_group_whitelist', 'inbox_group_blacklist'] },
-    { id: 'mention_notice', title: '点名通知卡', gates: ['mention_notice_enabled'], children: ['mention_notice_limit'], lists: [] },
-    {
-      id: 'topic', title: '话题概括', gates: ['topic_summary_enabled'],
-      children: [
-        'topic_light_provider_id', 'topic_min_unread', 'topic_cooldown_seconds', 'topic_max_chars',
-        'topic_line_max_chars', 'topic_timeout_seconds', 'topic_segment_msg_count', 'topic_segment_backfill_max',
-      ],
-      lists: [],
-    },
-    {
-      id: 'vision', title: '群聊识图', gates: ['vision_enabled'],
-      children: [
-        'vision_provider_ids', 'image_keep_days', 'vision_image_max', 'vision_brief_max_chars',
-        'vision_read_max_chars', 'vision_timeout_seconds', 'vision_cache_ttl_days',
       ],
       lists: [],
     },

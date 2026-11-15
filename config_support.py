@@ -18,7 +18,6 @@ if __package__:
     from .infra.constants import (
         DEFAULT_ACTIVITY_PREFETCH_KEYWORDS,
         DEFAULT_CUSTOM_TOOL_CALL_PROMPT,
-        DEFAULT_LMEM_GATEWAY_KEYWORDS,
         LEGACY_CUSTOM_TOOL_CALL_PROMPT,
         LOCALIZED_IMAGE_DIR_NAME,
     )
@@ -26,7 +25,6 @@ else:
     from infra.constants import (
         DEFAULT_ACTIVITY_PREFETCH_KEYWORDS,
         DEFAULT_CUSTOM_TOOL_CALL_PROMPT,
-        DEFAULT_LMEM_GATEWAY_KEYWORDS,
         LEGACY_CUSTOM_TOOL_CALL_PROMPT,
         LOCALIZED_IMAGE_DIR_NAME,
     )
@@ -37,6 +35,43 @@ CONFIG_ALIASES = {
     "merge_enabled": "debounce_enabled",
     "poke_reply_debounce_seconds": "poke_reply_cooldown_seconds",
 }
+REMOVED_CONFIG_KEYS = frozenset({
+    "force_wake_prefix",
+    "capability_hint_text",
+    "lmem_gateway_enabled",
+    "lmem_gateway_keywords",
+    "lmem_gateway_top_k",
+    "lmem_gateway_timeout_seconds",
+    "lmem_gateway_max_chars",
+    "lmem_gateway_plugin_name",
+    "lmem_gateway_recall_tool_name",
+    "shared_memory_enabled",
+    "master_umo",
+    "master_auto_bind",
+    "unread_inbox_enabled",
+    "inbox_group_whitelist",
+    "inbox_group_blacklist",
+    "mention_notice_enabled",
+    "mention_notice_limit",
+    "topic_summary_enabled",
+    "topic_light_provider_id",
+    "topic_min_unread",
+    "topic_cooldown_seconds",
+    "topic_max_chars",
+    "topic_line_max_chars",
+    "topic_timeout_seconds",
+    "topic_segment_msg_count",
+    "topic_segment_backfill_max",
+    "vision_enabled",
+    "vision_provider_ids",
+    "image_keep_days",
+    "vision_image_max",
+    "vision_brief_max_chars",
+    "vision_read_max_chars",
+    "vision_timeout_seconds",
+    "vision_cache_ttl_days",
+})
+
 QUIET_TIME_FIELDS = ("proactive_quiet_hours_start", "proactive_quiet_hours_end")
 WAKE_FLOOR = "proactive_silent_wake_floor_minutes"
 WAKE_CEIL = "proactive_silent_wake_ceil_minutes"
@@ -50,7 +85,6 @@ _LIST_SPLIT_RE = re.compile(r"[\n,，、;；]+")
 BLANK_BUILTIN_KEYS = frozenset({
     "poke_reply_prompt",
     "tool_call_prompt",
-    "lmem_gateway_keywords",
     "activity_prefetch_keywords",
 })
 
@@ -85,6 +119,14 @@ def fold_config_aliases(config: dict[str, Any]) -> dict[str, Any]:
             if new not in result:
                 result[new] = result[old]
             del result[old]
+    return result
+
+
+def strip_removed_config_keys(config: dict[str, Any]) -> dict[str, Any]:
+    """Drop keys belonging to features permanently removed from the plugin."""
+    result = copy.deepcopy(dict(config))
+    for key in REMOVED_CONFIG_KEYS:
+        result.pop(key, None)
     return result
 
 
@@ -249,7 +291,6 @@ class PluginConfig:
     merge_join_separator: str
     merge_localize_images: bool
     merge_localize_images_dir: Path
-    force_wake_prefix: str
     qq_official_enabled: bool
     qq_official_content_mode: bool
     qq_official_group_proactive: bool
@@ -311,40 +352,7 @@ class PluginConfig:
     proactive_silent_wake_allow_tools: bool
     proactive_quiet_start_minutes: int
     proactive_quiet_end_minutes: int
-    capability_hint_text: str
     capability_context_digest: bool
-    lmem_gateway_enabled: bool
-    lmem_gateway_keywords: set[str]
-    lmem_gateway_top_k: int
-    lmem_gateway_timeout_seconds: float
-    lmem_gateway_max_chars: int
-    lmem_gateway_plugin_name: str
-    lmem_gateway_recall_tool_name: str
-    shared_memory_enabled: bool
-    master_umo: str
-    master_auto_bind: bool
-    unread_inbox_enabled: bool
-    inbox_group_whitelist: set[str]
-    inbox_group_blacklist: set[str]
-    mention_notice_enabled: bool
-    mention_notice_limit: int
-    topic_summary_enabled: bool
-    topic_light_provider_id: str
-    topic_min_unread: int
-    topic_cooldown_seconds: int
-    topic_max_chars: int
-    topic_line_max_chars: int
-    topic_timeout_seconds: float
-    topic_segment_msg_count: int
-    topic_segment_backfill_max: int
-    vision_enabled: bool
-    vision_provider_ids: list[str]
-    image_keep_days: int
-    vision_image_max: int
-    vision_brief_max_chars: int
-    vision_read_max_chars: int
-    vision_timeout_seconds: float
-    vision_cache_ttl_days: int
     resident_inbox_enabled: bool
     resident_state_enabled: bool
     resident_extra_tools: set[str]
@@ -419,9 +427,8 @@ def build_plugin_config(
 
     wake_floor = _clamp_float(rt.get(WAKE_FLOOR, 5), 5.0, 1.0)
     wake_ceil = _clamp_float(rt.get(WAKE_CEIL, 60), 60.0, wake_floor + 2.0)
-    wake_mean = _clamp_float(rt.get(WAKE_MEAN, 30), 30.0, wake_floor + 1.0, wake_ceil - 1.0)
+    wake_mean = _clamp_float(rt.get(WAKE_MEAN, 45), 45.0, wake_floor + 1.0, wake_ceil - 1.0)
 
-    raw_lmem = _str_list(rt.get("lmem_gateway_keywords", []))
     raw_prefetch = _str_list(rt.get("activity_prefetch_keywords", []))
 
     return PluginConfig(
@@ -449,7 +456,6 @@ def build_plugin_config(
         merge_join_separator=str(rt.get("merge_join_separator", "\n") or "\n"),
         merge_localize_images=bool(rt.get("merge_localize_images", True)),
         merge_localize_images_dir=img_dir,
-        force_wake_prefix=str(rt.get("force_wake_prefix", "") or "").strip(),
         qq_official_enabled=bool(rt.get("qq_official_enabled", True)),
         qq_official_content_mode=bool(rt.get("qq_official_content_mode", True)),
         qq_official_group_proactive=bool(rt.get("qq_official_group_proactive", False)),
@@ -506,45 +512,12 @@ def build_plugin_config(
         proactive_silent_wake_floor_minutes=wake_floor,
         proactive_silent_wake_ceil_minutes=wake_ceil,
         proactive_silent_wake_target_mean_minutes=wake_mean,
-        proactive_silent_wake_daily_budget=_clamp_int(rt.get("proactive_silent_wake_daily_budget", 15), 15, 0),
+        proactive_silent_wake_daily_budget=_clamp_int(rt.get("proactive_silent_wake_daily_budget", 0), 0, 0),
         proactive_silent_wake_max_steps=_clamp_int(rt.get("proactive_silent_wake_max_steps", 8), 8, 1, 30),
         proactive_silent_wake_allow_tools=bool(rt.get("proactive_silent_wake_allow_tools", True)),
         proactive_quiet_start_minutes=parse_quiet_time_minutes(rt.get("proactive_quiet_hours_start", "00:00"), 0),
         proactive_quiet_end_minutes=parse_quiet_time_minutes(rt.get("proactive_quiet_hours_end", "08:00"), 8 * 60),
-        capability_hint_text=str(rt.get("capability_hint_text", "") or "").strip(),
         capability_context_digest=bool(rt.get("capability_context_digest", False)),
-        lmem_gateway_enabled=bool(rt.get("lmem_gateway_enabled", True)),
-        lmem_gateway_keywords=set(raw_lmem) if raw_lmem else set(DEFAULT_LMEM_GATEWAY_KEYWORDS),
-        lmem_gateway_top_k=_clamp_int(rt.get("lmem_gateway_top_k", 4), 4, 1, 20),
-        lmem_gateway_timeout_seconds=_clamp_float(rt.get("lmem_gateway_timeout_seconds", 2.5), 2.5, 0.3),
-        lmem_gateway_max_chars=_clamp_int(rt.get("lmem_gateway_max_chars", 600), 600, 50),
-        lmem_gateway_plugin_name=str(rt.get("lmem_gateway_plugin_name", "") or "LivingMemory").strip(),
-        lmem_gateway_recall_tool_name=str(rt.get("lmem_gateway_recall_tool_name", "") or "recall_long_term_memory").strip(),
-        shared_memory_enabled=bool(rt.get("shared_memory_enabled", False)),
-        master_umo=str(rt.get("master_umo", "") or "").strip(),
-        master_auto_bind=bool(rt.get("master_auto_bind", True)),
-        unread_inbox_enabled=bool(rt.get("unread_inbox_enabled", False)),
-        inbox_group_whitelist=set(_str_list(rt.get("inbox_group_whitelist", []))),
-        inbox_group_blacklist=set(_str_list(rt.get("inbox_group_blacklist", []))),
-        mention_notice_enabled=bool(rt.get("mention_notice_enabled", False)),
-        mention_notice_limit=_clamp_int(rt.get("mention_notice_limit", 20), 20, 1, 30),
-        topic_summary_enabled=bool(rt.get("topic_summary_enabled", False)),
-        topic_light_provider_id=str(rt.get("topic_light_provider_id", "") or "").strip(),
-        topic_min_unread=_clamp_int(rt.get("topic_min_unread", 5), 5, 1),
-        topic_cooldown_seconds=_clamp_int(rt.get("topic_cooldown_seconds", 180), 180, 0),
-        topic_max_chars=_clamp_int(rt.get("topic_max_chars", 24), 24, 4, 60),
-        topic_line_max_chars=_clamp_int(rt.get("topic_line_max_chars", 120), 120, 20, 300),
-        topic_timeout_seconds=_clamp_float(rt.get("topic_timeout_seconds", 10), 10.0, 1.0),
-        topic_segment_msg_count=_clamp_int(rt.get("topic_segment_msg_count", 25), 25, 5, 200),
-        topic_segment_backfill_max=_clamp_int(rt.get("topic_segment_backfill_max", 5), 5, 0, 50),
-        vision_enabled=bool(rt.get("vision_enabled", False)),
-        vision_provider_ids=_str_list(rt.get("vision_provider_ids", [])),
-        image_keep_days=_clamp_int(rt.get("image_keep_days", 3), 3, 0),
-        vision_image_max=_clamp_int(rt.get("vision_image_max", 6), 6, 1, 20),
-        vision_brief_max_chars=_clamp_int(rt.get("vision_brief_max_chars", 80), 80, 10, 300),
-        vision_read_max_chars=_clamp_int(rt.get("vision_read_max_chars", 500), 500, 50, 2000),
-        vision_timeout_seconds=_clamp_float(rt.get("vision_timeout_seconds", 60), 60.0, 3.0),
-        vision_cache_ttl_days=_clamp_int(rt.get("vision_cache_ttl_days", 30), 30, 1),
         resident_inbox_enabled=bool(rt.get("resident_inbox_enabled", True)),
         resident_state_enabled=bool(rt.get("resident_state_enabled", True)),
         resident_extra_tools=set(_str_list(rt.get("resident_extra_tools", []))),
@@ -626,9 +599,9 @@ def migrate_alias_file(path: Path) -> bool:
     config = json.loads(original.decode("utf-8-sig"))
     if not isinstance(config, dict):
         raise ValueError(f"配置文件必须是对象：{path.name}")
-    if not any(key in config for key in CONFIG_ALIASES):
+    if not any(key in config for key in CONFIG_ALIASES) and not any(key in config for key in REMOVED_CONFIG_KEYS):
         return False
-    migrated = fold_config_aliases(config)
+    migrated = strip_removed_config_keys(fold_config_aliases(config))
     digest = hashlib.sha256(original).hexdigest()[:12]
     backup = path.with_name(f"{path.name}.bak-alias-{digest}")
     if not backup.exists():

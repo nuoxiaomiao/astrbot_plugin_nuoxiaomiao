@@ -1,99 +1,19 @@
-import time
+"""Tests for resident inbox data layer (watermarks, unread counts, incremental read, mark_channel)."""
+
+import json
 import unittest
 
-from astrbot.core.message.components import Image, Plain
-
-from infra.constants import SELF_WAKE_EVENT_EXTRA, SYNTHETIC_EVENT_EXTRA
-from tests.fakes import FakeContext, FakeEvent, image_file, make_plugin, record_activity
+from tests.fakes import FakeContext, FakeEvent, make_plugin, record_activity
 
 
-class InboxGateTest(unittest.IsolatedAsyncioTestCase):
+class InboxDataLayerTest(unittest.IsolatedAsyncioTestCase):
     def make(self, **cfg):
         p = make_plugin(context=FakeContext(admins=["10001"]), **cfg)
         self.addAsyncCleanup(p.terminate)
         return p
 
-    def record(self, p, text, sender="9", mentioned=False, mid="", kind="group"):
-        return record_activity(p, text, sender=sender, mentioned=mentioned, mid=mid, kind=kind)
-
-    def test_disabled_never_silences(self):
-        p = self.make(unread_inbox_enabled=False)
-        event = FakeEvent()
-        self.assertFalse(p.resident.inbox.silence_candidate(event))
-
-    def test_plain_group_message_is_silenced(self):
-        p = self.make(unread_inbox_enabled=True)
-        event = FakeEvent(is_trigger=False)
-        self.assertTrue(p.resident.inbox.silence_candidate(event))
-
-    def test_at_wake_never_silenced(self):
-        p = self.make(unread_inbox_enabled=True)
-        self.assertFalse(
-            p.resident.inbox.silence_candidate(FakeEvent(is_trigger=True))
-        )
-
-    def test_keyword_woken_never_silenced(self):
-        p = self.make(unread_inbox_enabled=True)
-        self.assertFalse(
-            p.resident.inbox.silence_candidate(FakeEvent(), keyword_woken=True)
-        )
-
-    def test_private_chat_never_silenced(self):
-        p = self.make(unread_inbox_enabled=True)
-        event = FakeEvent(session="aiocqhttp:FriendMessage:9", is_private=True)
-        self.assertFalse(p.resident.inbox.silence_candidate(event))
-
-    def test_command_never_silenced(self):
-        command_filter = type("CommandFilter", (), {})()
-        command_handler = type(
-            "Handler", (), {"event_filters": [command_filter]}
-        )()
-        p = self.make(unread_inbox_enabled=True)
-        event = FakeEvent(
-            message_str="/help",
-            components=[Plain("/help")],
-            activated_handlers=[command_handler],
-        )
-        self.assertFalse(p.resident.inbox.silence_candidate(event))
-
-    def test_synthetic_and_self_wake_never_silenced(self):
-        p = self.make(unread_inbox_enabled=True)
-        synthetic = FakeEvent()
-        synthetic.set_extra(SYNTHETIC_EVENT_EXTRA, True)
-        self.assertFalse(p.resident.inbox.silence_candidate(synthetic))
-        self_wake = FakeEvent()
-        self_wake.set_extra(SELF_WAKE_EVENT_EXTRA, True)
-        self.assertFalse(p.resident.inbox.silence_candidate(self_wake))
-
-    def test_group_whitelist_limits_scope(self):
-        p = self.make(
-            unread_inbox_enabled=True,
-            inbox_group_whitelist=["30001"],
-        )
-        # 不在白名单里的群不进入信箱分流。
-        self.assertFalse(
-            p.resident.inbox.silence_candidate(FakeEvent(group_id="20001", is_trigger=False))
-        )
-        # 白名单内的群正常分流。
-        self.assertTrue(
-            p.resident.inbox.silence_candidate(FakeEvent(group_id="30001", is_trigger=False))
-        )
-
-    def test_group_blacklist_excludes_scope(self):
-        p = self.make(
-            unread_inbox_enabled=True,
-            inbox_group_blacklist=["20001"],
-        )
-        self.assertFalse(
-            p.resident.inbox.silence_candidate(FakeEvent(group_id="20001", is_trigger=False))
-        )
-        self.assertTrue(
-            p.resident.inbox.silence_candidate(FakeEvent(group_id="30001", is_trigger=False))
-        )
-
-    # ------------------------------------------------------------------
-    # mark_channel / notice / read 话题注入
-    # ------------------------------------------------------------------
+    def record(self, p, text, sender="9", mid="", mentioned=False):
+        return record_activity(p, text, sender=sender, mid=mid, mentioned=mentioned)
 
     async def test_mark_channel_clears_whole_channel(self):
         p = self.make(resident_inbox_enabled=True)
@@ -101,109 +21,73 @@ class InboxGateTest(unittest.IsolatedAsyncioTestCase):
             self.record(p, str(i))
         event = FakeEvent(is_trigger=False)
         persona, _ = await p.resident.persona.resolve(event)
-        data = await p.resident.inbox.read(event, conversation="20001", mode="unread")
-        self.assertEqual(data["count"], 10)
+        session = {"platform_id": "aiocqhttp", "kind": "group", "conversation_id": "20001", "name": "20001"}
+        self.assertEqual(p.resident.inbox.counts(persona, session, event)["unread"], 10)
         p.resident.inbox.mark_channel(persona, ("aiocqhttp", "group", "20001"))
-        remaining = await p.resident.inbox.read(
-            event, conversation="20001", mode="unread"
-        )
+        self.assertEqual(p.resident.inbox.counts(persona, session, event)["unread"], 0)
+        remaining = await p.resident.inbox.read(event, conversation="20001")
         self.assertEqual(remaining["count"], 0)
+        self.assertEqual(remaining["status"], "no_new_messages")
 
-    async def test_notice_includes_unread_and_topic(self):
-        p = self.make(
-            resident_inbox_enabled=True,
-            topic_summary_enabled=True,
+    async def test_list_and_incremental_read_clears_shown_unread_and_mentions(self):
+        p = self.make(resident_inbox_enabled=True)
+        self.record(p, "普通消息1", mid="m1", mentioned=False)
+        self.record(p, "@你消息", mid="m2", mentioned=True)
+        self.record(p, "普通消息2", mid="m3", mentioned=False)
+
+        admin_private = FakeEvent(
+            is_private=True,
+            session="aiocqhttp:FriendMessage:10001",
+            group_id="",
+            sender_id="10001",
+            message_str="看看未读",
         )
-        p.resident.store.set_topic_state(
-            "aiocqhttp:GroupMessage:20001", "大家在聊周末去哪", 1, time.time()
-        )
-        for i in range(6):
-            self.record(p, f"内容{i}", mentioned=i == 3)
-        persona = "@session:aiocqhttp:GroupMessage:20001"
-        text, shown_ids = await p.resident.inbox.notice(
-            FakeEvent(is_trigger=False), persona
-        )
-        self.assertIn("未读 6 条", text)
-        self.assertIn("近期话题：大家在聊周末去哪。", text)
-        self.assertIn("（@你）", text)
-        # 返回实际展示的 id：调用方只标这些已读，不能整频道清空。
-        self.assertEqual(len(shown_ids), 6)
+        listed = json.loads(await p.read_conversation_messages(admin_private))
+        self.assertEqual(listed["conversations"][0]["unread"], 3)
+        self.assertEqual(listed["conversations"][0]["unread_mentions"], 1)
 
-    async def test_notice_respects_limit(self):
-        p = self.make(resident_inbox_enabled=True, mention_notice_limit=2)
-        for i in range(10):
-            self.record(p, f"内容{i}")
-        persona = "@session:aiocqhttp:GroupMessage:20001"
-        text, shown_ids = await p.resident.inbox.notice(
-            FakeEvent(is_trigger=False), persona, limit=2
-        )
-        self.assertEqual(text.count("- "), 2)
-        self.assertEqual(len(shown_ids), 2)
-
-    async def test_read_injects_topic_for_single_session(self):
-        p = self.make(resident_inbox_enabled=True, topic_summary_enabled=True)
-        p.resident.store.set_topic_state(
-            "aiocqhttp:GroupMessage:20001", "在聊什么", 1, time.time()
-        )
-        self.record(p, "内容")
-        data = await p.resident.inbox.read(
-            FakeEvent(is_trigger=False), conversation="aiocqhttp:GroupMessage:20001"
-        )
-        self.assertEqual(data["topic"], "在聊什么")
-
-    # ------------------------------------------------------------------
-    # on_message 分流 + 速览采集联动
-    # ------------------------------------------------------------------
-
-    async def test_on_message_diverts_plain_group_message(self):
-        p = self.make(unread_inbox_enabled=True)
-        event = FakeEvent(is_trigger=False, message_str="随便聊聊")
-        await p.on_message(event)
-        self.assertTrue(event.stopped)
-        self.assertFalse(event.call_llm)
-
-    async def test_on_message_never_diverts_wake(self):
-        p = self.make(unread_inbox_enabled=True, merge_enabled=False)
-        event = FakeEvent(is_trigger=True, message_str="小喵在吗")
-        await p.on_message(event)
-        self.assertFalse(event.stopped)
-
-    async def test_diverted_message_still_captured(self):
-        p = self.make(unread_inbox_enabled=True, activity_buffer_enabled=True)
-        event = FakeEvent(is_trigger=False, message_str="随便聊聊", message_id="mid-x")
-        await p.on_message(event)
-        self.assertTrue(event.stopped)
-        await p.activity.capture_chat_activity(event)
-        sessions = p.activity.activity_sessions("group")
-        self.assertTrue(any(s["messages"] for s in sessions))
-
-    async def test_image_only_message_captured_when_vision_enabled(self):
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmp:
-            img = image_file(tmp)
-            p = self.make(vision_enabled=True, activity_buffer_enabled=True)
-            event = FakeEvent(
-                is_trigger=False,
-                message_str="",
-                components=[Image(file=img)],
-                message_id="mid-img",
+        unread = json.loads(
+            await p.read_conversation_messages(
+                admin_private,
+                conversation="aiocqhttp:GroupMessage:20001",
             )
-            await p.activity.capture_chat_activity(event)
-            sessions = p.activity.activity_sessions("group")
-            self.assertTrue(any(s["messages"] for s in sessions))
-
-    async def test_image_only_message_not_captured_when_vision_disabled(self):
-        p = self.make(vision_enabled=False, activity_buffer_enabled=True)
-        event = FakeEvent(
-            is_trigger=False,
-            message_str="",
-            components=[Image(file="/nonexistent/x.png")],
-            message_id="mid-img",
         )
-        await p.activity.capture_chat_activity(event)
-        sessions = p.activity.activity_sessions("group")
-        self.assertFalse(any(s["messages"] for s in sessions))
+        self.assertEqual(unread["count"], 3)
+        self.assertTrue(unread["marked_read"])
+        self.assertEqual([r["text"] for r in unread["results"]], ["普通消息1", "@你消息", "普通消息2"])
+        self.assertEqual(unread["results"][1]["mention_status"], "new")
+
+        listed_after = json.loads(await p.read_conversation_messages(admin_private))
+        self.assertEqual(listed_after["conversations"][0]["unread"], 0)
+        self.assertEqual(listed_after["conversations"][0]["unread_mentions"], 0)
+
+        again = json.loads(
+            await p.read_conversation_messages(
+                admin_private,
+                conversation="aiocqhttp:GroupMessage:20001",
+            )
+        )
+        self.assertEqual(again["count"], 0)
+        self.assertEqual(again["status"], "no_new_messages")
+
+    async def test_disabled_inbox_data_layer_returns_zero_unread(self):
+        p = self.make(resident_inbox_enabled=False)
+        self.record(p, "消息", mid="m1", mentioned=True)
+        admin_private = FakeEvent(
+            is_private=True,
+            session="aiocqhttp:FriendMessage:10001",
+            group_id="",
+            sender_id="10001",
+            message_str="看看未读",
+        )
+        listed = json.loads(await p.read_conversation_messages(admin_private))
+        self.assertEqual(listed["conversations"][0]["unread"], 0)
+        self.assertEqual(listed["conversations"][0]["unread_mentions"], 0)
+        read_res = json.loads(
+            await p.read_conversation_messages(admin_private, conversation="aiocqhttp:GroupMessage:20001")
+        )
+        self.assertEqual(read_res["count"], 1)
+        self.assertFalse(read_res["marked_read"])
 
 
 if __name__ == "__main__":

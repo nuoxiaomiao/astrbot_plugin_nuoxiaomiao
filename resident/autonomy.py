@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from datetime import datetime
 import time
+from types import SimpleNamespace
 from typing import Any
 
 from astrbot.api import logger
 
 if __package__ and "." in __package__:
-    from ..infra.constants import SELF_WAKE_EVENT_EXTRA
+    from ..infra import constants as _constants
+    from ..infra.constants import SELF_WAKE_EVENT_EXTRA, SELF_WAKE_OUTCOME_SKIPPED
     from .autonomy_budget import (
         CURRENT_RUN,
         BudgetExceeded,
@@ -22,7 +25,8 @@ if __package__ and "." in __package__:
     from .autonomy_sandbox import ScopedExecutor
     from .ports import resolve_agent_core
 else:
-    from infra.constants import SELF_WAKE_EVENT_EXTRA
+    from infra import constants as _constants
+    from infra.constants import SELF_WAKE_EVENT_EXTRA, SELF_WAKE_OUTCOME_SKIPPED
     from resident.autonomy_budget import (
         CURRENT_RUN,
         BudgetExceeded,
@@ -33,6 +37,8 @@ else:
     from resident.autonomy_delivery import DeferredDeliveryGate
     from resident.autonomy_sandbox import ScopedExecutor
     from resident.ports import resolve_agent_core
+
+SELF_WAKE_UMO = getattr(_constants, "SELF_WAKE_UMO", "nuoxiaomiao:FriendMessage:self_wake")
 
 __all__ = [
     "CURRENT_RUN",
@@ -80,11 +86,19 @@ class Autonomy:
         with self.service.store.transaction() as db:
             db.execute("UPDATE resident_runs SET status=? WHERE id=?", (run.status, run_id))
 
-    async def checkpoint(self, event: Any, phase: str) -> None:
+    def _today(self) -> str:
+        host = getattr(self.service, "host", None)
+        today_fn = getattr(host, "today_in_tz", None)
+        if callable(today_fn):
+            return today_fn()
+        return datetime.now().strftime("%Y-%m-%d")
+
+    async def checkpoint(self, event: Any, phase: str, *, require_self_wake: bool = True) -> None:
         p = self.service.plugin
         run = CURRENT_RUN.get()
         while True:
-            if not p.enabled or not p.proactive_silent_wake_enabled or not p.proactive_enabled:
+            need_self_wake = require_self_wake and (run is None or getattr(run, "require_self_wake", True))
+            if not p.enabled or not p.proactive_enabled or (need_self_wake and not p.proactive_silent_wake_enabled):
                 raise RunStopped("功能或自醒已关闭")
             if run and run.status == "stopped":
                 raise RunStopped("运行已由管理员停止")
@@ -122,11 +136,11 @@ class Autonomy:
             ]
         )
 
-    async def before_request(self, run: Run) -> None:
+    async def before_request(self, run: Run, *, count_step: bool = True) -> None:
         await self.checkpoint(run.event, "模型请求前")
         p = self.service.plugin
         store = self.service.store
-        if run.steps >= p.proactive_silent_wake_max_steps:
+        if count_step and run.steps >= p.proactive_silent_wake_max_steps:
             raise BudgetExceeded("本轮请求步数已达到上限")
         if store.rows(
             "SELECT id FROM resident_actions WHERE run_id=? AND status='unknown' UNION ALL SELECT id FROM resident_sends WHERE run_id=? AND status='unknown'",
@@ -134,7 +148,7 @@ class Autonomy:
         ):
             raise BudgetExceeded("本轮有结果未知的动作，核实之前停止后续请求")
         row = store.rows("SELECT * FROM resident_runs WHERE id=?", (run.id,))[0]
-        day = datetime.now().strftime("%Y-%m-%d")
+        day = self._today()
         daily = store.budget(day)
         if p.resident_run_token_limit or p.resident_daily_token_limit:
             if row["usage_unknown"] or (p.resident_daily_token_limit and daily["unknown"]):
@@ -143,13 +157,16 @@ class Autonomy:
             raise BudgetExceeded("本轮 token 阈值已达到")
         if p.resident_daily_token_limit and daily.get("uncached_tokens", daily["tokens"]) >= p.resident_daily_token_limit:
             raise BudgetExceeded("今日 token 阈值已达到")
-        store.charge(run.id, day, p.proactive_silent_wake_daily_budget)
+        wake_limit = int(p.proactive_silent_wake_daily_budget)
+        store.charge(run.id, day, 0 if wake_limit <= 0 else wake_limit)
         if run.request is not None:
             self.restrict_run(run)
-        with store.transaction() as db:
-            db.execute("UPDATE resident_runs SET requests=requests+1 WHERE id=?", (run.id,))
+        if count_step:
+            with store.transaction() as db:
+                db.execute("UPDATE resident_runs SET requests=requests+1 WHERE id=?", (run.id,))
         run.request_day = day
-        run.steps += 1
+        if count_step:
+            run.steps += 1
 
     def record_usage(self, run: Run, usage: Any) -> None:
         if usage is None:
@@ -161,11 +178,16 @@ class Autonomy:
             )
             self.service.store.usage(run.id, vals, day=run.request_day or None)
 
-    def wrap_provider(self, provider: Any) -> Any:
+    def wrap_provider(self, provider: Any, *, count_step: bool = True) -> Any:
         run = CURRENT_RUN.get()
-        if run is None or isinstance(provider, BudgetProvider):
+        if run is None:
             return provider
-        return BudgetProvider(provider, self, run)
+        desired = bool(count_step)
+        if isinstance(provider, BudgetProvider):
+            if provider.run is run and provider.count_step == desired:
+                return provider
+            return BudgetProvider(provider.provider, self, run, count_step=desired)
+        return BudgetProvider(provider, self, run, count_step=desired)
 
     async def close(self) -> None:
         tasks = []
@@ -205,16 +227,22 @@ class Autonomy:
             "SELECT id,umo FROM resident_runs WHERE status='pending' AND charged=0 ORDER BY id"
         ):
             try:
-                platform, typ, target = row["umo"].split(":", 2)
+                umo_str = str(row["umo"] or "")
+                platform, typ, target = umo_str.split(":", 2)
+                if not platform or not target or typ not in ("GroupMessage", "FriendMessage", "OtherMessage"):
+                    raise ValueError("invalid umo")
                 kind = "group" if typ == "GroupMessage" else "private"
-                allowed = (
-                    host.proactive_group_allowed(target, "")
-                    if kind == "group"
-                    else host.proactive_person_allowed(target)
-                )
+                if umo_str == SELF_WAKE_UMO:
+                    allowed = True
+                else:
+                    allowed = (
+                        host.proactive_group_allowed(target, "")
+                        if kind == "group"
+                        else host.proactive_person_allowed(target)
+                    )
                 if allowed:
                     picked = {
-                        "umo": row["umo"],
+                        "umo": umo_str,
                         "platform_id": platform,
                         "kind": kind,
                         "id": target,
@@ -225,7 +253,8 @@ class Autonomy:
                     break
                 self.service.store.finish(row["id"], "skipped", "skipped", "恢复时目标已不在允许范围")
             except (ValueError, TypeError):
-                logger.debug("[糯小喵] 恢复挂起运行失败：umo=%r，跳过该行", row["umo"])
+                logger.debug("[糯小喵] 恢复挂起运行失败：umo=%r，标记为失败", row["umo"])
+                self.service.store.finish(row["id"], "failed", "error", "无效会话标识，无法恢复")
                 continue
 
         run: Run | None = None
@@ -267,7 +296,14 @@ class Autonomy:
             event = core.cron_event_cls(**kwargs)
             event.role = "member"
             try:
-                plugin_set = p.context.get_config(umo=event.unified_msg_origin).get("plugin_set", ["*"])
+                if picked["umo"] == SELF_WAKE_UMO:
+                    try:
+                        cfg = p.context.get_config()
+                    except TypeError:
+                        cfg = p.context.get_config(umo=None)
+                else:
+                    cfg = p.context.get_config(umo=event.unified_msg_origin)
+                plugin_set = cfg.get("plugin_set", ["*"])
             except (AttributeError, TypeError):
                 plugin_set = ["*"]
             event.plugins_name = None if "*" in plugin_set else list(plugin_set)
@@ -288,9 +324,26 @@ class Autonomy:
             req = ProviderRequest()
             req.prompt = prompt
             if core.get_session_conv is not None:
-                req.conversation = await core.get_session_conv(event, p.context)
+                conv = await core.get_session_conv(event, p.context)
+                if conv is not None:
+                    try:
+                        isolated = copy.copy(conv)
+                        isolated.history = "[]"
+                        isolated.token_usage = 0
+                        req.conversation = isolated
+                    except Exception:
+                        cid = conv.get("cid", "") if isinstance(conv, dict) else getattr(conv, "cid", "")
+                        pid = conv.get("persona_id") if isinstance(conv, dict) else getattr(conv, "persona_id", None)
+                        req.conversation = SimpleNamespace(
+                            cid=cid,
+                            persona_id=pid,
+                            history="[]",
+                            token_usage=0,
+                        )
+                else:
+                    req.conversation = None
             persona, _ = await self.service.persona.resolve(event, req)
-            day = datetime.now().strftime("%Y-%m-%d")
+            day = self._today()
             rid = pending_id or self.service.store.new_run(picked["umo"], persona, day)
             with self.service.store.transaction() as db:
                 db.execute(
@@ -303,13 +356,17 @@ class Autonomy:
             token = CURRENT_RUN.set(run)
             event.set_extra("nuoxiaomiao_resident_run_id", rid)
             self.service.integration.migrate_selection()
-            provider = await host.select_self_wake_provider()
-            legacy["provider_id"] = host.provider_id_of(provider)
             if not p.proactive_silent_wake_allow_tools:
                 res_tuple = await host.run_self_wake_fallback(legacy, quiet)
-                status = "succeeded" if res_tuple[0] else "failed"
+                status = (
+                    "skipped"
+                    if res_tuple[1] == SELF_WAKE_OUTCOME_SKIPPED
+                    else ("succeeded" if res_tuple[0] else "failed")
+                )
                 outcome = res_tuple[1]
                 return res_tuple
+            provider = await host.select_self_wake_provider()
+            legacy["provider_id"] = host.provider_id_of(provider)
             config = host.build_self_wake_agent_config(event)
             if hasattr(config, "fallback_provider_ids"):
                 config.fallback_provider_ids = []
@@ -345,7 +402,7 @@ class Autonomy:
             runner.provider = self.wrap_provider(runner.provider)
             compressor = getattr(getattr(runner, "request_context_manager", None), "compressor", None)
             if compressor is not None and getattr(compressor, "provider", None) is not None:
-                compressor.provider = self.wrap_provider(compressor.provider)
+                compressor.provider = self.wrap_provider(compressor.provider, count_step=False)
             runner.tool_executor = ScopedExecutor(runner.tool_executor, self, run)
             self.restrict_run(run)
             while not runner.done() and run.steps < p.proactive_silent_wake_max_steps:
@@ -363,12 +420,20 @@ class Autonomy:
             if str(getattr(getattr(runner, "state", None), "name", "")) == "ERROR":
                 raise RuntimeError(summary or "宿主运行器报告失败")
             status = "succeeded" if runner.done() else "limited"
-            outcome = "spoke" if run.sent else "quiet"
+            outcome = "spoke" if (run.sent or run.postponed) else "quiet"
             return True, outcome
         except BudgetExceeded as exc:
             status = "limited"
-            outcome = "spoke" if run and run.sent else "quiet"
             summary = str(exc)
+            if run is not None and not (run.sent or run.postponed):
+                charged_rows = self.service.store.rows(
+                    "SELECT charged FROM resident_runs WHERE id=?",
+                    (run.id,),
+                )
+                if not charged_rows or not int(charged_rows[0]["charged"] or 0):
+                    outcome = SELF_WAKE_OUTCOME_SKIPPED
+                    return True, outcome
+            outcome = "spoke" if (run and (run.sent or run.postponed)) else "quiet"
             return True, outcome
         except RunStopped:
             status = "interrupted"
@@ -383,8 +448,18 @@ class Autonomy:
         except Exception as exc:
             if run and run.limit_reason:
                 status = "limited"
-                outcome = "spoke" if run.sent else "quiet"
                 summary = run.limit_reason
+                if not (run.sent or run.postponed) and (
+                    "token" in run.limit_reason or "用量" in run.limit_reason
+                ):
+                    charged_rows = self.service.store.rows(
+                        "SELECT charged FROM resident_runs WHERE id=?",
+                        (run.id,),
+                    )
+                    if not charged_rows or not int(charged_rows[0]["charged"] or 0):
+                        outcome = SELF_WAKE_OUTCOME_SKIPPED
+                        return True, outcome
+                outcome = "spoke" if (run.sent or run.postponed) else "quiet"
                 return True, outcome
             summary = str(exc)
             logger.warning("[糯小喵] 自主运行失败：%s", exc)
@@ -409,14 +484,19 @@ class Autonomy:
                 ):
                     status = "failed"
                 self.service.store.finish(run.id, status, outcome, summary)
+                all_targets = [
+                    str(x.get("umo") or x.get("target_umo") or x.get("target") or "")
+                    for x in (run.sent + run.postponed)
+                ]
                 legacy.update(
                     ended_ts=time.time(),
                     steps=run.steps,
                     outcome=outcome,
                     thinking=summary,
-                    said=bool(run.sent),
-                    said_text="\n".join(x.get("text", "") for x in run.sent),
-                    sent_to="、".join(x.get("umo", "") for x in run.sent),
+                    said=bool(run.sent or run.postponed or legacy.get("said")),
+                    said_text="\n".join(x.get("text", "") for x in run.sent if x.get("text"))
+                    or str(legacy.get("said_text") or ""),
+                    sent_to="、".join(t for t in all_targets if t) or str(legacy.get("sent_to") or ""),
                     tool_calls=self.service.store.rows(
                         "SELECT tool AS name,status,result FROM resident_actions WHERE run_id=?",
                         (run.id,),

@@ -7,9 +7,13 @@ import time
 from typing import Any, Awaitable, Callable
 
 if __package__ and "." in __package__:
+    from ..infra import constants as _constants
     from .autonomy_budget import CURRENT_RUN, BudgetExceeded, Run, RunStopped
 else:
+    from infra import constants as _constants
     from resident.autonomy_budget import CURRENT_RUN, BudgetExceeded, Run, RunStopped
+
+SELF_WAKE_UMO = getattr(_constants, "SELF_WAKE_UMO", "nuoxiaomiao:FriendMessage:self_wake")
 
 
 class DeferredDeliveryGate:
@@ -49,16 +53,20 @@ class DeferredDeliveryGate:
             async with lock:
                 while rid in self.autonomy.runs:
                     await asyncio.sleep(0.2)
-                saved = store.rows("SELECT * FROM resident_runs WHERE id=?", (rid,))[0]
+                saved_rows = store.rows("SELECT * FROM resident_runs WHERE id=?", (rid,))
+                if not saved_rows:
+                    return await callback(row)
+                saved = saved_rows[0]
                 if saved["status"] not in ("succeeded", "limited"):
                     host.update_proactive_row(row["id"], status="skipped", done_ts=time.time())
                     return None
-                event = service.web_event(saved["umo"])
+                event = service.web_event(saved["umo"] or SELF_WAKE_UMO)
                 run = Run(
                     rid,
                     event,
                     saved["persona"],
-                    steps=saved["requests"],
+                    steps=0,
+                    require_self_wake=False,
                     task=asyncio.current_task(),
                 )
                 self.autonomy.runs[rid] = run
@@ -66,7 +74,7 @@ class DeferredDeliveryGate:
                 status = saved["status"]
                 detail = saved["summary"]
                 try:
-                    await self.autonomy.checkpoint(event, "静默顺延发送恢复")
+                    await self.autonomy.checkpoint(event, "静默顺延发送恢复", require_self_wake=False)
                     return await callback(row)
                 except BudgetExceeded as exc:
                     status = "limited"
@@ -94,7 +102,7 @@ class DeferredDeliveryGate:
                 finally:
                     if store.rows("SELECT id FROM resident_sends WHERE run_id=? AND status='unknown'", (rid,)):
                         status = "unknown"
-                    store.finish(rid, status, "spoke" if run.sent else saved["outcome"], detail)
+                    store.finish(rid, status, "spoke" if (run.sent or run.postponed) else saved["outcome"], detail, preserve_ended=True)
                     self.autonomy.runs.pop(rid, None)
                     CURRENT_RUN.reset(token)
         finally:

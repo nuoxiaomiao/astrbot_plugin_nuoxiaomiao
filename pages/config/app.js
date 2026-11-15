@@ -465,7 +465,7 @@
       var statusRoot = $('status-root'); if (!statusRoot) return;
       if (residentHandle && $('resident-root')) return;
       statusRoot.replaceChildren();
-      statusRoot.appendChild(pageHead('运行与状态', '自主运行记录、当前状态与表达风格；长内容点击展开。', false));
+      statusRoot.appendChild(pageHead('运行与状态', '自主运行记录与当前状态；长内容点击展开。', false));
       var host = node('div', 'resident-panel'); host.id = 'resident-root';
       statusRoot.appendChild(host);
       if (win.NuoxiaomiaoResidentPanel && typeof win.NuoxiaomiaoResidentPanel.mount === 'function') {

@@ -215,7 +215,7 @@ class GroupActivityToolTest(unittest.IsolatedAsyncioTestCase):
         plugin = make_activity_plugin(context=FakeContext(admins=["10001"]))
         self._seed(plugin)
 
-        data = json.loads(await plugin.list_conversations(self._private()))
+        data = json.loads(await plugin.read_conversation_messages(self._private()))
 
         self.assertEqual(data["count"], 2)
         names = {c["name"] for c in data["conversations"]}
@@ -226,7 +226,7 @@ class GroupActivityToolTest(unittest.IsolatedAsyncioTestCase):
         plugin = make_activity_plugin(context=FakeContext(admins=["10001"]))
         self._seed(plugin)
 
-        data = json.loads(await plugin.list_conversations(self._group()))
+        data = json.loads(await plugin.read_conversation_messages(self._group()))
 
         self.assertEqual(data["count"], 3)
         await plugin.terminate()
@@ -236,7 +236,7 @@ class GroupActivityToolTest(unittest.IsolatedAsyncioTestCase):
         self._seed(plugin)
 
         data = json.loads(
-            await plugin.list_conversations(self._group(), kind="private")
+            await plugin.read_conversation_messages(self._group(), kind="private")
         )
 
         self.assertEqual(data["count"], 1)
@@ -314,7 +314,7 @@ class GroupActivityToolTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["results"][0]["text"], "这个 bug 修好了")
         await plugin.terminate()
 
-    async def test_read_without_filter_returns_recent(self):
+    async def test_read_without_filter_returns_directory(self):
         plugin = make_activity_plugin(context=FakeContext(admins=["10001"]))
         self._seed(plugin)
 
@@ -324,9 +324,8 @@ class GroupActivityToolTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn("error", data)
         self.assertEqual(data["count"], 2)
-        self.assertIn("note", data)
         self.assertEqual(
-            {item["conversation"] for item in data["results"]},
+            {item["name"] for item in data["conversations"]},
             {"猫娘群", "技术群"},
         )
         await plugin.terminate()
@@ -372,7 +371,7 @@ class GroupActivityToolTest(unittest.IsolatedAsyncioTestCase):
         plugin = make_activity_plugin(context=FakeContext(admins=["99999"]))
         self._seed(plugin)
 
-        listed = json.loads(await plugin.list_conversations(self._private()))
+        listed = json.loads(await plugin.read_conversation_messages(self._private()))
         read = json.loads(
             await plugin.read_conversation_messages(
                 self._private(), conversation="猫娘群"
@@ -389,7 +388,7 @@ class GroupActivityToolTest(unittest.IsolatedAsyncioTestCase):
         )
         self._seed(plugin)
 
-        data = json.loads(await plugin.list_conversations(self._private()))
+        data = json.loads(await plugin.read_conversation_messages(self._private()))
 
         self.assertEqual(data["count"], 2)
         await plugin.terminate()

@@ -10,7 +10,7 @@ import sqlite3
 import threading
 from typing import Any, Callable, Iterator, TypeVar
 
-SCHEMA_VERSION = "6"
+SCHEMA_VERSION = "8"
 MOODS = ("平静", "开心", "低落", "疲惫", "烦躁", "专注", "期待")
 T = TypeVar("T")
 
@@ -117,20 +117,13 @@ def migrate_resident(conn: sqlite3.Connection, path: str) -> None:
             "CREATE TABLE IF NOT EXISTS resident_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS resident_reads (persona TEXT NOT NULL, message_id INTEGER NOT NULL, PRIMARY KEY(persona,message_id))",
             "CREATE INDEX IF NOT EXISTS resident_reads_message ON resident_reads(message_id)",
+            "CREATE TABLE IF NOT EXISTS resident_channel_watermarks (persona TEXT NOT NULL, platform_id TEXT NOT NULL, kind TEXT NOT NULL, conversation_id TEXT NOT NULL, last_read_id INTEGER NOT NULL DEFAULT 0, updated REAL NOT NULL DEFAULT 0, PRIMARY KEY(persona, platform_id, kind, conversation_id))",
             "CREATE INDEX IF NOT EXISTS resident_message_ref ON activity_messages(platform_id,kind,conversation_id,message_id)",
             "CREATE TABLE IF NOT EXISTS resident_moods (persona TEXT PRIMARY KEY, mood TEXT NOT NULL, intensity INTEGER NOT NULL, updated REAL NOT NULL)",
             "CREATE TABLE IF NOT EXISTS resident_focus (persona TEXT NOT NULL, umo TEXT NOT NULL, body TEXT NOT NULL, updated REAL NOT NULL, PRIMARY KEY(persona,umo))",
-            "CREATE TABLE IF NOT EXISTS resident_styles (persona TEXT PRIMARY KEY, version INTEGER NOT NULL, body TEXT NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS resident_style_versions (persona TEXT NOT NULL, version INTEGER NOT NULL, body TEXT NOT NULL, created REAL NOT NULL, PRIMARY KEY(persona,version))",
-            "CREATE TABLE IF NOT EXISTS resident_proposals (id INTEGER PRIMARY KEY AUTOINCREMENT, persona TEXT NOT NULL, body TEXT NOT NULL, reason TEXT NOT NULL, base_version INTEGER NOT NULL, base_hash TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', created REAL NOT NULL)",
             "CREATE TABLE IF NOT EXISTS resident_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, umo TEXT NOT NULL, persona TEXT NOT NULL, day TEXT NOT NULL, started REAL NOT NULL, ended REAL, status TEXT NOT NULL DEFAULT 'pending', outcome TEXT NOT NULL DEFAULT '', charged INTEGER NOT NULL DEFAULT 0, input_other INTEGER NOT NULL DEFAULT 0, input_cached INTEGER NOT NULL DEFAULT 0, output INTEGER NOT NULL DEFAULT 0, usage_unknown INTEGER NOT NULL DEFAULT 0, summary TEXT NOT NULL DEFAULT '', requests INTEGER NOT NULL DEFAULT 0, meta TEXT NOT NULL DEFAULT '')",
             "CREATE INDEX IF NOT EXISTS resident_runs_day ON resident_runs(day,charged)",
             "CREATE TABLE IF NOT EXISTS resident_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL, tool TEXT NOT NULL, args TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'running', result TEXT NOT NULL DEFAULT '', started REAL NOT NULL, ended REAL)",
-            "CREATE TABLE IF NOT EXISTS resident_topic_segments (id INTEGER PRIMARY KEY AUTOINCREMENT, umo TEXT NOT NULL, start_msg_id INTEGER NOT NULL, end_msg_id INTEGER NOT NULL, start_ts REAL NOT NULL, end_ts REAL NOT NULL, summary TEXT NOT NULL)",
-            "CREATE INDEX IF NOT EXISTS resident_topic_segments_umo ON resident_topic_segments(umo,end_msg_id)",
-            "CREATE TABLE IF NOT EXISTS vision_kept_images (id INTEGER PRIMARY KEY AUTOINCREMENT, umo TEXT NOT NULL, platform_message_id TEXT NOT NULL, activity_message_id INTEGER NOT NULL, idx INTEGER NOT NULL DEFAULT 0, path TEXT NOT NULL, ts REAL NOT NULL)",
-            "CREATE INDEX IF NOT EXISTS vision_kept_images_umo ON vision_kept_images(umo,platform_message_id)",
-            "CREATE TABLE IF NOT EXISTS vision_caption_cache (key TEXT PRIMARY KEY, caption TEXT NOT NULL, ts REAL NOT NULL)",
         ]
         for statement in statements:
             conn.execute(statement)
@@ -148,6 +141,20 @@ def migrate_resident(conn: sqlite3.Connection, path: str) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO resident_meta VALUES ('inbox_baseline',?)",
             (str(baseline),),
+        )
+        for drop_sql in (
+            "DROP INDEX IF EXISTS resident_topic_segments_umo",
+            "DROP INDEX IF EXISTS vision_kept_images_umo",
+            "DROP TABLE IF EXISTS resident_styles",
+            "DROP TABLE IF EXISTS resident_style_versions",
+            "DROP TABLE IF EXISTS resident_proposals",
+            "DROP TABLE IF EXISTS resident_topic_segments",
+            "DROP TABLE IF EXISTS vision_kept_images",
+            "DROP TABLE IF EXISTS vision_caption_cache",
+        ):
+            conn.execute(drop_sql)
+        conn.execute(
+            "DELETE FROM resident_meta WHERE key='master_auto_umo' OR key LIKE 'topic:%' OR key LIKE 'topic_to_id:%' OR key LIKE 'topic_updated_at:%'"
         )
         conn.execute(
             "INSERT OR REPLACE INTO resident_meta VALUES ('schema',?)",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -118,8 +119,8 @@ if __name__.startswith("data.plugins.") and __name__.endswith(".main"):
 @register(
     PLUGIN_NAME,
     "nuoxiaomiao",
-    "防抖合并、整轮发送排队、连刷拦截、聊天速览、主动消息、自醒与长期记忆按需检索（支持 QQ 官方机器人）",
-    "2.5.2",
+    "防抖合并、整轮发送排队、连刷拦截、聊天速览、主动消息与自主自醒（支持 QQ 官方机器人）",
+    "2.5.3",
 )
 class NuoxiaomiaoPlugin(Star):
     def __init__(self, context: Context, config: dict | None = None):
@@ -250,6 +251,9 @@ class NuoxiaomiaoPlugin(Star):
             outputpro_split.enable_qq_official()
         else:
             outputpro_split.disable_qq_official()
+        legacy_vision_dir = self.plugin_data_dir() / "vision_kept"
+        if legacy_vision_dir.is_dir():
+            await asyncio.to_thread(shutil.rmtree, legacy_vision_dir, True)
         await self.resident.initialize()
         self.send_order.refresh()
         logger.info("[%s] 整轮发送排队: %s", DISPLAY_NAME, self.send_order.describe())
@@ -260,10 +264,9 @@ class NuoxiaomiaoPlugin(Star):
     async def _prepare_qq_official_event(self, event: AstrMessageEvent) -> None:
         await self.send_observer.prepare_qq_official_event(event)
 
-    @filter.event_message_type(EventMessageType.ALL, priority=12000)
-    async def _proactive_reply_watcher(self, event: AstrMessageEvent) -> None:
+    async def _proactive_reply_watcher(self, event: AstrMessageEvent, *, keyword_woken: bool = False) -> None:
         try:
-            if not self.guard.is_typing_notice(event):
+            if self.self_wake.should_reset_quiet_timer(event, keyword_woken=keyword_woken):
                 self.self_wake.mark_human_activity()
         except Exception as exc:
             logger.debug("[%s] 更新安静计时失败: %s", DISPLAY_NAME, exc)
@@ -328,12 +331,7 @@ class NuoxiaomiaoPlugin(Star):
                 keyword_woken = True
                 logger.info("[%s] keyword wake: session=%s sender=%s", DISPLAY_NAME, str(event.unified_msg_origin), sender_id)
 
-        if self.resident.inbox.silence_candidate(event, keyword_woken=keyword_woken):
-            event.stop_event()
-            umo = str(event.unified_msg_origin or "")
-            if umo:
-                await self.resident.topic.maybe_summarize(umo)
-            return
+        await self._proactive_reply_watcher(event, keyword_woken=keyword_woken)
 
         is_trigger = self.guard.is_dialogue_trigger(event)
         session_key = str(event.unified_msg_origin)
@@ -364,10 +362,6 @@ class NuoxiaomiaoPlugin(Star):
                     await self.merger.cancel_merge(merge_key)
                 await self.guard.apply_guard_block(event, session_key, sender_id, should_send_meme)
 
-    @filter.on_waiting_llm_request(priority=100)
-    async def on_waiting_llm_request(self, event: AstrMessageEvent) -> None:
-        await self.ctx_injector.on_waiting_llm_request(event)
-
     @filter.on_llm_request(priority=100)
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
         await self.ctx_injector.on_llm_request(event, req)
@@ -397,108 +391,61 @@ class NuoxiaomiaoPlugin(Star):
     async def after_reply_sent(self, event: AstrMessageEvent) -> None:
         self.send_observer.finish_send_observer(event)
 
-    @filter.llm_tool(name="list_conversations")
-    async def list_conversations(self, event: AstrMessageEvent, kind: str = "all", limit: int = 20) -> str:
-        """列出机器人记录过的其它群聊和私聊，按最近活跃排序，不含当前对话。
-
-        Args:
-            kind(string): all=全部、group=只看群聊、private=只看私聊。默认 all。
-            limit(number): 最多列几个会话，默认 20，最多 50。
-        """
-        return await self.activity_tools.list_conversations(event, kind=kind, limit=limit)
-
     @filter.llm_tool(name="read_conversation_messages")
     async def read_conversation_messages(
         self,
         event: AstrMessageEvent,
         conversation: str = "",
         kind: str = "",
+        before_id: int = 0,
         after: str = "",
         sender: str = "",
         keyword: str = "",
+        only_unread: bool = False,
         limit: int = 20,
-        mode: str = "",
-        before_id: int = 0,
-        mark_read: bool = False,
     ) -> str:
-        """查看其它群聊或私聊里说过的话，可按会话、发言人、时间、关键词筛选。
+        """列出会话或查看群聊/私聊消息（支持增量未读与历史翻页）。
 
-        当用户问起别的群/私聊里说过什么、让你翻聊天记录时调用本工具，
-        不要凭印象回答。一个筛选条件都不给时会返回最近的记录，不会报错。
+        - 不传 conversation 且不传 before_id/after/sender/keyword：列出可用会话及未读数（可传 only_unread=true 仅看未读）。
+        - 传入 conversation：默认只看上次查看之后的新消息并把本屏展示到的记为已读（首次查看返回最近记录）。
+        - 传入 before_id：往前翻更早的历史记录，翻页默认不改未读状态。
+        - 传入 after/sender/keyword：按时间、发言人或关键词检索，不改已读状态。
 
         Args:
-            conversation(string): 群名、群号、群 openid、私聊昵称、QQ 或用户 openid，可空；留空就在所有记录过的会话里找。
-            kind(string): group 或 private，可空。
+            conversation(string): 完整 umo、群名、群号、群 openid、私聊昵称、QQ 或用户 openid；留空则列会话列表或按条件跨会话检索。
+            kind(string): all、group 或 private，可空。
+            before_id(number): 往前翻页的记录 ID 游标，默认 0；使用返回的 next_before_id 或 unshown_before_id。
             after(string): 只看这个时间之后的消息。可用 2026-10-06 12:00、30分钟前、2小时前、昨天、今天。
             sender(string): 只看这个人说的话：昵称或 QQ，可空。
             keyword(string): 只留正文里包含这个词的消息，可空。
-            limit(number): 最多返回多少条，默认 20，最多 50。
-            mode(string): 留空沿用旧版查询；recent 最近记录；unread 未读；mentions 未读提及与前文。
-            before_id(number): 往前翻页的记录 ID，默认 0；使用返回的 next_before_id。
-            mark_read(boolean): 只把本次返回的记录标记已读，默认 false。
+            only_unread(boolean): 仅在留空 conversation 列会话列表时生效，传 true 只返回有未读消息的会话。
+            limit(number): 最多返回多少条（或多少个会话），默认 20，最多 50。
         """
         return await self.activity_tools.read_conversation_messages(
-            event, conversation, kind, after, sender, keyword, limit, mode, before_id, mark_read
+            event, conversation, kind, before_id, after, sender, keyword, only_unread, limit
         )
-
-    @filter.llm_tool(name="read_image")
-    async def read_image(
-        self,
-        event: AstrMessageEvent,
-        conversation: str = "",
-        message_id: int = 0,
-        index: int = 0,
-        question: str = "",
-    ) -> str:
-        """查看其它会话里发过的一张图片，并回答关于它的问题。
-
-        需要先调用 list_conversations 拿到会话的 umo、再用
-        read_conversation_messages 找到带图消息的 id；本工具按该消息里图片的
-        序号（0 起）读取留底图片。仅当带图消息的图片被留底后才可用。
-
-        Args:
-            conversation(string): 会话的完整 umo，如 napcat:GroupMessage:12345；从 list_conversations 获取。
-            message_id(number): read_conversation_messages 返回结果的 id（记录编号）。
-            index(number): 该消息里第几张图，从 0 开始；默认 0。
-            question(string): 想知道的细节问题，可空；留空返回已有描述。
-        """
-        return await self.activity_tools.read_image(event, conversation, message_id, index, question)
 
     @filter.llm_tool(name="nuoxiaomiao_update_state")
     async def nuoxiaomiao_update_state(
         self,
         event: AstrMessageEvent,
-        mood: str,
-        intensity: int = 50,
-        focus: str = "",
+        mood: str = "",
+        intensity: int | None = None,
+        focus: str | None = None,
+        clear_focus: bool = False,
     ) -> str:
-        """更新当前状态，不替代记忆和待办。
+        """更新当前状态（可只改心情或只改本会话关注点），不替代记忆和待办。
 
         Args:
-            mood(string): 平静、开心、低落、疲惫、烦躁、专注、期待之一；同人设共享。
-            intensity(number): 心情强度，0～100 的整数。
-            focus(string): 本会话的具体原因与关注点，最多 2000 字，只在本会话使用；空串清除。
+            mood(string): 可选。平静、开心、低落、疲惫、烦躁、专注、期待之一；留空保持当前心情不变。
+            intensity(number): 可选。心情强度，0～100 的整数；留空保持当前强度（首次设心情默认 50）。
+            focus(string): 可选。本会话的具体原因与关注点，最多 2000 字，只在本会话使用；不传则保留原有关注点。
+            clear_focus(boolean): 传 true 清空本会话关注点，默认 false。
         """
         try:
-            return await self.resident.update_state(event, mood, intensity, focus)
-        except ValueError as exc:
-            return json.dumps({"error": str(exc)}, ensure_ascii=False)
-
-    @filter.llm_tool(name="nuoxiaomiao_propose_style")
-    async def nuoxiaomiao_propose_style(
-        self,
-        event: AstrMessageEvent,
-        content: str,
-        reason: str,
-    ) -> str:
-        """提出表达风格建议；管理员在页面批准之前不生效，不修改基础身份。
-
-        Args:
-            content(string): 建议的完整风格补充，最多 4000 字，不含私人聊天内容。
-            reason(string): 调整理由，最多 2000 字。
-        """
-        try:
-            return await self.resident.propose_style(event, content, reason)
+            return await self.resident.update_state(
+                event, mood=mood, intensity=intensity, focus=focus, clear_focus=clear_focus
+            )
         except ValueError as exc:
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
@@ -524,7 +471,7 @@ class NuoxiaomiaoPlugin(Star):
         凌晨静默时段内的发送会自动顺延到时段结束，fire_at 如实说明。
 
         Args:
-            target(string): 发送目标。传「当前」=当前会话（最稳，推荐）；留空也按当前会话；私聊:QQ或openid；群:群名、群号或群openid。QQ 官方平台只认 openid（不是数字 QQ），当前群的 openid 会在能力提醒里给出。目标必须被主人允许。
+            target(string): 发送目标。传「当前」=当前会话（最稳，推荐）；留空也按当前会话；也可传完整 umo、私聊:QQ/openid 或 群:群名/群号/openid。QQ 官方平台只认 openid（不是数字 QQ），当前群的 openid 会在能力提醒里给出。目标必须被主人允许。
             intent(string): 你想说的事和原因，一两句写清楚，那边的你会据此组织语言。
             at(string): 可选。要在群里@的人（昵称、QQ 号或 openid）。默认谁都不@。QQ 官方平台不会真的发出@（适配器只能把它变成正文里的纯文本标记），传了也会被忽略。
         """

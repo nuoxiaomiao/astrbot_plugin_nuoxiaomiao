@@ -1,9 +1,8 @@
-"""LLM request/response hooks, brain-lock gating, capability reminders, and LMEM recall."""
+"""LLM request/response hooks, capability reminders, self-wake context, and activity prefetch."""
 
 from __future__ import annotations
 
-import asyncio
-import json
+import inspect
 from typing import Any, Callable
 
 from astrbot.api import logger
@@ -22,42 +21,34 @@ if __package__ and "." in __package__:
     from ..infra.constants import (
         ACTIVITY_PREFETCH_MAX_SESSIONS,
         ACTIVITY_PREFETCH_PER_SESSION,
-        BRAIN_LOCK_WAIT_SECONDS,
         CAPABILITY_HINT_ACTIVITY,
         CAPABILITY_HINT_PROACTIVE,
         CAPABILITY_REMINDER_HEADER,
         DISPLAY_NAME,
-        LMEM_CONTEXT_FOOTER,
-        LMEM_CONTEXT_HEADER,
-        NO_BRAIN_EXTRA,
         SELF_WAKE_EVENT_EXTRA,
         SYNTHETIC_EVENT_EXTRA,
         UNTRUSTED_NOTE,
     )
-    from ..infra.runtime import RateLimitedLogger, extract_text, matches_any_keyword
+    from ..infra.runtime import RateLimitedLogger, extract_text, matches_any_keyword, resolve_timezone
     from ..qq_official import is_qq_official, platform_capability_note
 else:
     from infra.constants import (
         ACTIVITY_PREFETCH_MAX_SESSIONS,
         ACTIVITY_PREFETCH_PER_SESSION,
-        BRAIN_LOCK_WAIT_SECONDS,
         CAPABILITY_HINT_ACTIVITY,
         CAPABILITY_HINT_PROACTIVE,
         CAPABILITY_REMINDER_HEADER,
         DISPLAY_NAME,
-        LMEM_CONTEXT_FOOTER,
-        LMEM_CONTEXT_HEADER,
-        NO_BRAIN_EXTRA,
         SELF_WAKE_EVENT_EXTRA,
         SYNTHETIC_EVENT_EXTRA,
         UNTRUSTED_NOTE,
     )
-    from infra.runtime import RateLimitedLogger, extract_text, matches_any_keyword
+    from infra.runtime import RateLimitedLogger, extract_text, matches_any_keyword, resolve_timezone
     from qq_official import is_qq_official, platform_capability_note
 
 
 class ContextService:
-    """Coordinate waiting/request/response hooks, reminders, prefetch, and LMEM recall."""
+    """Coordinate request/response hooks, capability reminders, self-wake context, and activity prefetch."""
 
     def __init__(
         self,
@@ -80,44 +71,6 @@ class ContextService:
         self._resident_getter = resident_getter
         self._rate_log = RateLimitedLogger(interval_seconds=60.0)
 
-    async def on_waiting_llm_request(self, event: Any) -> None:
-        p = self.plugin
-        if not p.enabled or not p.shared_memory_enabled:
-            return
-        if self.guard.is_poke_event(event) or self.guard.is_typing_notice(event):
-            return
-        if event.get_extra(SELF_WAKE_EVENT_EXTRA):
-            return
-        resident = self._resident_getter()
-        await resident.master.maybe_auto_bind(event)
-        if not p.shared_memory_enabled:
-            return
-        held = False
-        try:
-            held = await asyncio.wait_for(
-                resident.master.acquire_brain(),
-                timeout=BRAIN_LOCK_WAIT_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            event.set_extra(NO_BRAIN_EXTRA, True)
-            self._rate_log.warning(
-                "brain_lock_timeout",
-                "[%s] 等待主脑锁超过 %.0f 秒，本轮不绑定共享记忆",
-                DISPLAY_NAME,
-                BRAIN_LOCK_WAIT_SECONDS,
-            )
-            return
-        except asyncio.CancelledError:
-            resident.master.release_brain()
-            raise
-        except Exception:
-            resident.master.release_brain()
-            return
-        if held:
-            task = asyncio.current_task()
-            if task is not None:
-                task.add_done_callback(lambda _t: resident.master.release_brain())
-
     async def on_llm_request(self, event: Any, req: ProviderRequest) -> None:
         p = self.plugin
         if self.guard.is_poke_event(event) or not p.enabled:
@@ -125,11 +78,10 @@ class ContextService:
         resident = self._resident_getter()
         if event.get_extra(SELF_WAKE_EVENT_EXTRA):
             resident.integration.restrict(event, req)
-            self.maybe_override_tool_call_prompt(req)
+            self._sanitize_self_wake_tool_prompt(req)
             await resident.persona.inject(event, req)
+            await self.maybe_add_self_wake_context(event, req)
             return
-
-        await resident.master.bind_master(event, req)
 
         if p.debounce_enabled and not event.get_extra(SYNTHETIC_EVENT_EXTRA):
             sender_id = str(event.get_sender_id() or "").strip()
@@ -145,26 +97,6 @@ class ContextService:
         self.maybe_add_capability_reminder(event, req)
         await self.maybe_inject_context(event, req)
         resident.inbox.request_ids(event)
-
-        if p.mention_notice_enabled and getattr(event, "is_at_or_wake_command", False):
-            try:
-                persona, _ = await resident.persona.resolve(event)
-                exclude_ids = (
-                    event.get_extra("nuoxiaomiao_inbox_request_ids")
-                    or event.get_extra("nuoxiaomiao_inbox_ids")
-                    or []
-                )
-                notice_text, shown_ids = await resident.inbox.notice(event, persona, exclude_ids=exclude_ids)
-                if notice_text:
-                    self.append_temp_context(req, notice_text)
-                if shown_ids:
-                    event.set_extra("nuoxiaomiao_inbox_shown_ids", shown_ids)
-            except Exception as exc:
-                self._rate_log.warning("notice_inject", "[%s] 注入点名通知失败: %s", DISPLAY_NAME, exc)
-
-        umo = str(event.unified_msg_origin or "")
-        if umo:
-            await resident.topic.maybe_summarize(umo)
         await resident.persona.inject(event, req)
 
     async def on_llm_response(self, event: Any, response: Any) -> None:
@@ -188,6 +120,252 @@ class ContextService:
             await self.media.cleanup_batch(merge_key, epoch)
         await self.media.cleanup_expired()
 
+    async def maybe_add_self_wake_context(self, event: Any, req: ProviderRequest) -> None:
+        if getattr(req, "_nuoxiaomiao_self_wake_context_added", False):
+            return
+        resident = None
+        try:
+            resident = self._resident_getter()
+        except Exception:
+            resident = None
+
+        sections: list[str] = []
+
+        # 1. Unread overview across allowed sessions
+        try:
+            if getattr(self.plugin, "activity_buffer_enabled", True):
+                sessions = list(self.activity.activity_sessions("all") or [])
+                inbox = getattr(resident, "inbox", None) if resident is not None else None
+                if inbox is not None and callable(getattr(inbox, "allowed", None)):
+                    allowed_sessions = [s for s in sessions if inbox.allowed(s, event)]
+                else:
+                    allowed_sessions = sessions
+
+                persona = "default"
+                if resident is not None and getattr(resident, "persona", None) is not None:
+                    try:
+                        resolved_p, _ = await resident.persona.resolve(event)
+                        if resolved_p and not str(resolved_p).startswith("@session:"):
+                            persona = str(resolved_p)
+                    except Exception:
+                        persona = "default"
+
+                counts_map: dict[tuple[str, str, str], dict[str, Any]] = {}
+                if inbox is not None and allowed_sessions:
+                    batch_fn = getattr(inbox, "batch_counts", None)
+                    used_batch = False
+                    if callable(batch_fn):
+                        try:
+                            try:
+                                res = batch_fn(persona, allowed_sessions, event)
+                            except TypeError:
+                                res = batch_fn(persona, allowed_sessions)
+                            if inspect.isawaitable(res):
+                                res = await res
+                            if isinstance(res, dict):
+                                matched = 0
+                                for s in allowed_sessions:
+                                    key = (s["platform_id"], s["kind"], s["conversation_id"])
+                                    umo = s.get("umo") or (
+                                        f"{s['platform_id']}:{'GroupMessage' if s['kind'] == 'group' else 'FriendMessage'}:{s['conversation_id']}"
+                                    )
+                                    entry = res.get(key) if key in res else res.get(umo)
+                                    if isinstance(entry, dict):
+                                        counts_map[key] = entry
+                                        matched += 1
+                                if len(res) == 0 or matched > 0:
+                                    used_batch = True
+                        except Exception:
+                            counts_map = {}
+
+                    if not used_batch and callable(getattr(inbox, "counts", None)):
+                        for s in allowed_sessions:
+                            key = (s["platform_id"], s["kind"], s["conversation_id"])
+                            try:
+                                try:
+                                    c = inbox.counts(persona, s, event)
+                                except TypeError:
+                                    c = inbox.counts(persona, s)
+                                if inspect.isawaitable(c):
+                                    c = await c
+                                if isinstance(c, dict):
+                                    counts_map[key] = c
+                            except Exception:
+                                pass
+
+                enriched: list[dict[str, Any]] = []
+                for s in allowed_sessions:
+                    key = (s["platform_id"], s["kind"], s["conversation_id"])
+                    c = counts_map.get(key, {})
+                    unread = int(c.get("unread", 0) or 0)
+                    mentions = int(c.get("unread_mentions", 0) or 0)
+                    umo = s.get("umo") or (
+                        f"{s['platform_id']}:{'GroupMessage' if s['kind'] == 'group' else 'FriendMessage'}:{s['conversation_id']}"
+                    )
+                    if hasattr(self.activity, "display_conversation_name"):
+                        name = self.activity.display_conversation_name(
+                            s["platform_id"], s["kind"], s["conversation_id"], s.get("name", "")
+                        )
+                    else:
+                        name = str(s.get("name") or s["conversation_id"])
+                    last_ts = float(s.get("last_ts") or 0)
+                    last_hhmm = ""
+                    if last_ts > 0:
+                        from datetime import datetime
+
+                        tz = resolve_timezone(self.plugin.context)
+                        dt = datetime.fromtimestamp(last_ts, tz=tz) if tz is not None else datetime.fromtimestamp(last_ts)
+                        last_hhmm = dt.strftime("%m-%d %H:%M")
+                    enriched.append(
+                        {
+                            "kind": s["kind"],
+                            "umo": umo,
+                            "name": name,
+                            "unread": unread,
+                            "unread_mentions": mentions,
+                            "last_ts": last_ts,
+                            "last_hhmm": last_hhmm,
+                        }
+                    )
+
+                total_sessions = len(enriched)
+                unread_items = [x for x in enriched if x["unread"] > 0 or x["unread_mentions"] > 0]
+                unread_items.sort(
+                    key=lambda x: (x["unread_mentions"] > 0, x["unread_mentions"], x["unread"], x["last_ts"]),
+                    reverse=True,
+                )
+                if unread_items:
+                    sections.append(
+                        f"【未读概况】共 {total_sessions} 个可查看会话，其中 {len(unread_items)} 个有未读（需查看正文请调 read_conversation_messages）："
+                    )
+                    for item in unread_items[:8]:
+                        kind_label = "群" if item["kind"] == "group" else "私聊"
+                        when = f"｜最后活跃 {item['last_hhmm']}" if item["last_hhmm"] else ""
+                        mention_note = f"，@提及 {item['unread_mentions']} 条" if item["unread_mentions"] else ""
+                        sections.append(
+                            f"- {kind_label}「{item['name']}」({item['umo']}){when}：未读 {item['unread']} 条{mention_note}"
+                        )
+                    if len(unread_items) > 8:
+                        sections.append(
+                            f"（另有 {len(unread_items) - 8} 个未读会话，可用 read_conversation_messages 不传 conversation 查看完整列表）"
+                        )
+                else:
+                    sections.append(f"【未读概况】共 {total_sessions} 个可查看会话，当前暂无未读消息。")
+        except Exception as exc:
+            logger.debug("[%s] 生成自醒未读概况失败: %s", DISPLAY_NAME, exc)
+
+        # 1.5 Recent self-wake timeline continuity (avoid hijacking a random group's chat history)
+        store = getattr(resident, "store", None) if resident is not None else None
+        if store is not None and callable(getattr(store, "rows", None)):
+            try:
+                cur_rid = int(event.get_extra("nuoxiaomiao_resident_run_id") or 0)
+                recent_runs = store.rows(
+                    "SELECT id, started, outcome, summary FROM resident_runs "
+                    "WHERE id != ? AND outcome IN ('quiet', 'spoke', 'interrupted') "
+                    "ORDER BY id DESC LIMIT 3",
+                    (cur_rid,),
+                )
+                if recent_runs:
+                    from datetime import datetime
+
+                    tz = resolve_timezone(self.plugin.context)
+                    run_lines = []
+                    for rr in reversed(recent_runs):
+                        ts_val = float(rr.get("started") or 0)
+                        stamp = (
+                            (datetime.fromtimestamp(ts_val, tz=tz) if tz is not None else datetime.fromtimestamp(ts_val)).strftime("%m-%d %H:%M")
+                            if ts_val > 0
+                            else "--:--"
+                        )
+                        summ = " ".join(str(rr.get("summary") or "").split())
+                        if len(summ) > 60:
+                            summ = summ[:60].rstrip() + "…"
+                        outcome_label = {"quiet": "安静结束", "spoke": "已对外发言", "interrupted": "已中断"}.get(
+                            str(rr.get("outcome") or ""), str(rr.get("outcome") or "")
+                        )
+                        tail = f"（{summ}）" if summ else ""
+                        run_lines.append(f"- {stamp} {outcome_label}{tail}")
+                    sections.append("【近期自醒记录】\n" + "\n".join(run_lines))
+            except Exception:
+                pass
+
+        # 2. Allowed proactive targets
+        targets = getattr(self.plugin, "targets", None) or getattr(self.proactive, "targets", None)
+        if targets is not None and getattr(self.plugin, "proactive_enabled", True):
+            try:
+                hint_dict = targets.allowed_targets_hint(event) or {}
+                hint = str(hint_dict.get("hint") or "").strip()
+                if hint:
+                    sections.append(f"【允许的主动目标】{hint}")
+            except Exception:
+                pass
+
+        # 3. Pending deferred proactive queue
+        if getattr(self.plugin, "proactive_enabled", True):
+            try:
+                pending = str(self.proactive.pending_summary() or "").strip()
+                if pending:
+                    sections.append(f"【主动消息待发与近期记录】\n{pending}")
+            except Exception:
+                pass
+
+        # 4. QQ Official platform note
+        if is_qq_official(event):
+            sections.append(
+                "【平台提示】QQ 官方平台需使用 openid（无法用数字 QQ），且非图文消息主动送达可能受限。"
+            )
+
+        # 5. Mounted tools actually present in req.func_tool.tools
+        func_tool = getattr(req, "func_tool", None)
+        tools = getattr(func_tool, "tools", None) if func_tool else None
+        mounted = sorted(
+            {
+                str(getattr(tool, "name", "") or "").strip()
+                for tool in (tools or [])
+                if getattr(tool, "active", True) and str(getattr(tool, "name", "") or "").strip()
+            }
+        )
+        if mounted:
+            sections.append("【本轮实际挂载工具】" + "、".join(mounted))
+        else:
+            sections.append("【本轮实际挂载工具】无（当前无可用工具，可直接安静结束）")
+
+        # 6. Consecutive quiet-wake reminder on beat 2 or 5
+        self_wake = getattr(self.plugin, "self_wake", None)
+        if self_wake is not None and callable(getattr(self_wake, "quiet_streak", None)):
+            try:
+                streak = int(self_wake.quiet_streak() or 0)
+                prompt_text = str(getattr(req, "prompt", "") or "")
+                if streak in (2, 5) and f"连续第 {streak} 次安静醒来" not in prompt_text:
+                    sections.append(
+                        f"（提示：这是连续第 {streak} 次安静醒来，可顺便检查一下当前心情、会话关注点或待办；没事继续安静结束即可。）"
+                    )
+            except Exception:
+                pass
+
+        if sections:
+            self.append_temp_context(req, "[糯小喵自醒上下文]\n" + "\n".join(sections))
+            req._nuoxiaomiao_self_wake_context_added = True
+
+    @staticmethod
+    def _sanitize_self_wake_tool_prompt(req: ProviderRequest) -> None:
+        sys_prompt = str(getattr(req, "system_prompt", "") or "")
+        if not sys_prompt:
+            return
+        if _DEFAULT_TOOL_CALL_PROMPT and _DEFAULT_TOOL_CALL_PROMPT in sys_prompt:
+            req.system_prompt = sys_prompt.replace(
+                _DEFAULT_TOOL_CALL_PROMPT,
+                "Follow the tool schema exactly and do not invent parameters. This is an autonomous wake turn: do not narrate tool calls to a user; if no external action or message is needed, finish quietly.",
+                1,
+            )
+            return
+        if _DEFAULT_TOOL_CALL_PROMPT_SKILLS_LIKE_MODE and _DEFAULT_TOOL_CALL_PROMPT_SKILLS_LIKE_MODE in sys_prompt:
+            req.system_prompt = sys_prompt.replace(
+                _DEFAULT_TOOL_CALL_PROMPT_SKILLS_LIKE_MODE,
+                "Tool schemas may be provided in two stages: first only name and description, then full parameter schema on request. Do not guess arguments before seeing the schema. This is an autonomous wake turn: do not explain tool calls or summarize tool results to a user; if no external action or message is needed, finish quietly.",
+                1,
+            )
+
     def maybe_override_tool_call_prompt(self, req: ProviderRequest) -> None:
         p = self.plugin
         if not p.tool_call_prompt_enabled or not p.tool_call_prompt:
@@ -205,12 +383,8 @@ class ContextService:
         names = tool_names or set()
         parts: list[str] = []
         if p.activity_buffer_enabled and p.activity_tool_enabled and p.activity_hint_enabled:
-            if {"list_conversations", "read_conversation_messages"} <= names:
+            if "read_conversation_messages" in names:
                 parts.append(f"- {CAPABILITY_HINT_ACTIVITY}")
-            elif "list_conversations" in names:
-                parts.append("- 用 list_conversations 查看其它会话列表；本轮未挂载读取消息的工具。")
-            elif "read_conversation_messages" in names:
-                parts.append("- 用 read_conversation_messages 按会话、发言人、时间和关键词查看消息，不要凭印象编造。")
         if p.proactive_enabled and p.proactive_hint_enabled and "send_message" in names:
             parts.append(f"- {CAPABILITY_HINT_PROACTIVE}")
         return "\n".join(parts)
@@ -223,19 +397,15 @@ class ContextService:
         platform_note: str = "",
     ) -> str:
         p = self.plugin
-        custom = str(getattr(p, "capability_hint_text", "") or "").strip()
         parts: list[str] = []
-        if custom:
-            parts.append(custom)
-        else:
-            menu = self.capability_menu(tool_names)
-            if menu:
-                parts.append(menu)
+        menu = self.capability_menu(tool_names)
+        if menu:
+            parts.append(menu)
         if platform_note:
             parts.append(platform_note)
         if has_astrhe and p.proactive_enabled and "send_message" in (tool_names or set()):
             parts.append("工具分工：到点做某事、承诺提醒这类计划性安排用 astrhe_schedule；对允许的会话说一句话用 send_message。")
-        if show_pendings and p.proactive_enabled and (p.proactive_hint_enabled or custom):
+        if show_pendings and p.proactive_enabled and p.proactive_hint_enabled:
             pending = self.proactive.pending_summary()
             if pending:
                 parts.append(pending)
@@ -261,7 +431,7 @@ class ContextService:
                     f"当前会话是私聊，用户 openid={sender_id}"
                     f"（完整 umo={platform_id}:FriendMessage:{sender_id}）；"
                     f'主动消息 target 直接传「当前」即可，也可以传 「私聊:{sender_id}」。'
-                    "不要传空字符串或 <openid> 占位。"
+                    '示例：send_message(target="当前", intent="测试主动消息", at="")。'
                 )
         except Exception:
             pass
@@ -299,12 +469,6 @@ class ContextService:
         p = self.plugin
         try:
             text = extract_text(event, strip_at_markup=bool(getattr(p, "qq_official_strip_at_markup", True)))
-            if p.lmem_gateway_enabled and matches_any_keyword(text, p.lmem_gateway_keywords):
-                block = await self.recall_from_lmem(event, text)
-                if block:
-                    self.append_temp_context(req, block)
-                    logger.info("[%s] 已附带长期记忆参考: session=%s", DISPLAY_NAME, str(event.unified_msg_origin))
-
             if (
                 p.activity_buffer_enabled
                 and self.activity.activity_permission_ok(event)
@@ -314,7 +478,7 @@ class ContextService:
                 if p.capability_context_digest:
                     current = self.activity.current_conversation(event)
                     digest = self.proactive.other_sessions_digest(
-                        {current} if current else set(), require_proactive_context=False
+                        {current} if current else set(), require_proactive_context=True
                     )
                     if digest:
                         block = (
@@ -339,7 +503,7 @@ class ContextService:
             {current} if current else set(),
             max_sessions=ACTIVITY_PREFETCH_MAX_SESSIONS,
             per_session=ACTIVITY_PREFETCH_PER_SESSION,
-            require_proactive_context=False,
+            require_proactive_context=True,
         )
         if not digest:
             return ""
@@ -366,125 +530,3 @@ class ContextService:
             req.system_prompt = f"{req.system_prompt or ''}\n{text}\n"
         except Exception:
             pass
-
-    async def recall_from_lmem(self, event: Any, query: str) -> str:
-        tool = self._find_lmem_tool()
-        if tool is not None:
-            if not callable(getattr(tool, "call", None)):
-                return ""
-            recall = self._recall_with_lmem_tool(event, query, tool=tool)
-        else:
-            recall = self._recall_with_lmem_engine(event, query)
-        try:
-            return await asyncio.wait_for(recall, timeout=self.plugin.lmem_gateway_timeout_seconds)
-        except Exception as exc:
-            logger.debug("[%s] 长期记忆检索失败或超时: %s", DISPLAY_NAME, exc)
-            return ""
-
-    def _find_lmem_tool(self) -> Any:
-        try:
-            tools = self.plugin.context.get_llm_tool_manager().func_list
-        except Exception:
-            return None
-        for tool in tools or []:
-            if getattr(tool, "name", "") == self.plugin.lmem_gateway_recall_tool_name:
-                return tool
-        return None
-
-    def _build_agent_context(self, event: Any) -> Any:
-        try:
-            from astrbot.core.agent.run_context import ContextWrapper
-            from astrbot.core.astr_agent_context import AstrAgentContext
-
-            return ContextWrapper(context=AstrAgentContext(context=self.plugin.context, event=event))
-        except Exception:
-            holder = type("SimpleAgentContext", (), {})()
-            holder.context = self.plugin.context
-            holder.event = event
-            try:
-                from astrbot.core.agent.run_context import ContextWrapper
-
-                return ContextWrapper(context=holder)
-            except Exception:
-                return type("SimpleContextWrapper", (), {"context": holder})()
-
-    async def _recall_with_lmem_tool(self, event: Any, query: str, tool: Any = None) -> str:
-        if tool is None:
-            tool = self._find_lmem_tool()
-        if tool is None or not callable(getattr(tool, "call", None)):
-            return ""
-        try:
-            context_wrapper = self._build_agent_context(event)
-            raw = await tool.call(context_wrapper, query=query, k=self.plugin.lmem_gateway_top_k)
-        except Exception as exc:
-            logger.debug("[%s] 调用长期记忆检索失败: %s", DISPLAY_NAME, exc)
-            return ""
-        return self._format_lmem_result(raw)
-
-    async def _recall_with_lmem_engine(self, event: Any, query: str) -> str:
-        try:
-            star = self.plugin.context.get_registered_star(self.plugin.lmem_gateway_plugin_name)
-        except Exception:
-            star = None
-        instance = getattr(star, "star_cls", None) if star is not None else None
-        engine = getattr(getattr(instance, "initializer", None), "memory_engine", None)
-        if engine is None or not callable(getattr(engine, "search_memories", None)):
-            return ""
-        try:
-            memories = await engine.search_memories(
-                query=query,
-                k=self.plugin.lmem_gateway_top_k,
-                session_id=str(event.unified_msg_origin),
-                persona_id=None,
-            )
-        except Exception as exc:
-            logger.debug("[%s] 直接检索长期记忆失败: %s", DISPLAY_NAME, exc)
-            return ""
-        lines = []
-        for memory in memories or []:
-            content = str(getattr(memory, "content", "") or "").strip()
-            if content:
-                lines.append(f"- {content}")
-        return self._wrap_lmem_lines(lines)
-
-    def _format_lmem_result(self, raw: Any) -> str:
-        data: Any = raw
-        if isinstance(raw, str):
-            try:
-                data = json.loads(raw)
-            except Exception:
-                data = raw
-        items: list[Any] = []
-        if isinstance(data, dict):
-            for key in ("results", "记录", "memories"):
-                if isinstance(data.get(key), list):
-                    items = data[key]
-                    break
-        if items:
-            lines = []
-            for item in items:
-                if isinstance(item, dict):
-                    content = str(item.get("content") or item.get("内容") or item.get("text") or "").strip()
-                    if not content:
-                        continue
-                    score = item.get("score")
-                    if isinstance(score, (int, float)):
-                        lines.append(f"- {content}（相关度 {float(score):.2f}）")
-                    else:
-                        lines.append(f"- {content}")
-                else:
-                    text = str(item).strip()
-                    if text:
-                        lines.append(f"- {text}")
-            return self._wrap_lmem_lines(lines)
-        if isinstance(data, str) and data.strip() and data.strip() != "null":
-            return self._wrap_lmem_lines([data.strip()])
-        return ""
-
-    def _wrap_lmem_lines(self, lines: list[str]) -> str:
-        if not lines:
-            return ""
-        body = "\n".join(lines)
-        if len(body) > self.plugin.lmem_gateway_max_chars:
-            body = body[: self.plugin.lmem_gateway_max_chars].rstrip() + "…"
-        return f"{LMEM_CONTEXT_HEADER}\n{body}\n{LMEM_CONTEXT_FOOTER}"

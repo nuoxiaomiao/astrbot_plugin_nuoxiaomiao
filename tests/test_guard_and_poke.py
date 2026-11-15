@@ -331,7 +331,6 @@ class EventSpanCloseTest(unittest.IsolatedAsyncioTestCase):
             debounce_enabled=True,
             merge_idle_seconds=1,
             merge_max_total_seconds=12,
-            force_wake_prefix="小喵",
         )
         trace, calls = self._fake_trace()
         event = FakeEvent(message_str="短句", is_trigger=True)
@@ -367,7 +366,7 @@ class GroupScopeTest(unittest.IsolatedAsyncioTestCase):
     """群聊黑白名单：黑名单优先、白名单圈定、群号群名均可、私聊不受影响。"""
 
     def _plugin(self, **cfg):
-        return make_plugin(force_wake_prefix="小喵", **cfg)
+        return make_plugin(**cfg)
 
     def test_scope_semantics(self):
         self.assertTrue(group_scope_allows("1", "", set(), set()))

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import fields
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+from datetime import datetime
+import inspect
 import sys
 from typing import Any
 
@@ -32,6 +33,7 @@ if __package__ and "." in __package__:
         extract_components,
         group_scope_allows,
         message_id_of,
+        now_in_tz,
         plugin_name_of_tool,
     )
 else:
@@ -42,6 +44,7 @@ else:
         extract_components,
         group_scope_allows,
         message_id_of,
+        now_in_tz,
         plugin_name_of_tool,
     )
 
@@ -164,6 +167,15 @@ class ResidentHost:
     def is_command_event(self, event: Any) -> bool:
         return self.plugin.guard.is_command_event(event)
 
+    def is_synthetic_id(self, message_id: str) -> bool:
+        merger = getattr(self.plugin, "merger", None)
+        if merger is not None and callable(getattr(merger, "is_synthetic_id", None)):
+            return bool(merger.is_synthetic_id(message_id))
+        return False
+
+    def should_reset_quiet_timer(self, event: Any, *, keyword_woken: bool = False) -> bool:
+        return bool(self.plugin.self_wake.should_reset_quiet_timer(event, keyword_woken=keyword_woken))
+
     @staticmethod
     def message_id(event: Any) -> str:
         return message_id_of(event)
@@ -181,13 +193,19 @@ class ResidentHost:
     def resolve_activity_conversations(self, name: str, kind: str = "all") -> list[dict[str, Any]]:
         return self.plugin.activity.resolve_activity_conversations(name, kind)
 
-    def display_conversation_name(
-        self, name: str, kind: str, conversation_id: str, platform_id: str = ""
-    ) -> str:
-        return self.plugin.activity.display_conversation_name(name, kind, conversation_id, platform_id)
+    def now_in_tz(self) -> datetime:
+        return now_in_tz(getattr(self.plugin, "context", None))
 
-    def display_user_name(self, sender_id: str, sender_name: str, platform_id: str = "") -> str:
-        return self.plugin.activity.display_user_name(sender_id, sender_name, platform_id)
+    def today_in_tz(self) -> str:
+        return self.now_in_tz().strftime("%Y-%m-%d")
+
+    def display_conversation_name(
+        self, platform_id: str, kind: str, conversation_id: str, name: str = ""
+    ) -> str:
+        return self.plugin.activity.display_conversation_name(platform_id, kind, conversation_id, name)
+
+    def display_user_name(self, platform_id: str, user_id: str, name: str = "") -> str:
+        return self.plugin.activity.display_user_name(platform_id, user_id, name)
 
     @staticmethod
     def group_scope_allows(
@@ -227,7 +245,10 @@ class ResidentHost:
         self.plugin.proactive.cancel_timer(row_id)
 
     async def pick_self_wake_session(self) -> dict[str, Any] | None:
-        return await self.plugin.self_wake.pick_session()
+        res = self.plugin.self_wake.pick_session()
+        if inspect.isawaitable(res):
+            return await res
+        return res
 
     def self_wake_prompt(self, quiet_minutes: float) -> str:
         return self.plugin.self_wake.self_wake_prompt(quiet_minutes, self.plugin.context)

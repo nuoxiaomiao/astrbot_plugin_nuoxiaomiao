@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta
 import re
 import time
 from typing import Any, Callable
@@ -27,10 +28,12 @@ if __package__ and "." in __package__:
         RateLimitedLogger,
         admin_ids_of,
         extract_components,
+        extract_media_summary,
         extract_text,
         message_id_of,
         now_in_tz,
         parse_activity_time,
+        resolve_timezone,
     )
     from ..qq_official import (
         display_name_fallback,
@@ -56,10 +59,12 @@ else:
         RateLimitedLogger,
         admin_ids_of,
         extract_components,
+        extract_media_summary,
         extract_text,
         message_id_of,
         now_in_tz,
         parse_activity_time,
+        resolve_timezone,
     )
     from qq_official import (
         display_name_fallback,
@@ -341,6 +346,13 @@ class ActivityService:
                     text=body,
                 )
             )
+            self_wake = getattr(p, "self_wake", None)
+            if (
+                not self.guard.is_poke_event(event)
+                and self_wake is not None
+                and callable(getattr(self_wake, "mark_human_activity", None))
+            ):
+                self_wake.mark_human_activity()
         except Exception as exc:
             logger.debug("[%s] 记录机器人回复失败: %s", DISPLAY_NAME, exc)
 
@@ -395,9 +407,9 @@ class ActivityService:
                 return
             text = extract_text(event, strip_at_markup=bool(getattr(p, "qq_official_strip_at_markup", True)))
             if not text:
-                if not (p.vision_enabled and message_id):
-                    return
-                text = ""
+                text = extract_media_summary(event)
+            if not text:
+                return
             truncated = len(text) > p.activity_buffer_max_text_chars
             if truncated:
                 text = text[: p.activity_buffer_max_text_chars] + "…"
@@ -428,11 +440,6 @@ class ActivityService:
                 ),
             )
             event.set_extra("nuoxiaomiao_inbox_ids", [activity_id])
-            resident = self._resident_getter()
-            if resident is not None and p.vision_enabled and message_id:
-                task = asyncio.create_task(resident.vision.keep_message_images(event, activity_id, message_id))
-                p._resident_bg_tasks.add(task)
-                task.add_done_callback(p._resident_bg_tasks.discard)
             self.schedule_prune_if_due()
         except Exception as exc:
             self._rate_log.warning("capture_activity", "[%s] 记录会话消息失败: %s", DISPLAY_NAME, exc)
@@ -493,11 +500,11 @@ class ActivityService:
             resident = self._resident_getter()
             if resident is not None:
                 await self.db.run(resident.inbox.prune)
-                await self.db.run(resident.store.cleanup_runs, p.activity_retention_days)
-                await self.db.run(resident.vision.cleanup)
-                sessions = await self.db.run(self.activity_sessions, "all")
-                active_umos = {s["umo"] for s in sessions}
-                await self.db.run(resident.store.topic_repo.prune_stale_topics, active_umos)
+                retention = int(p.activity_retention_days or 30)
+                if retention <= 0:
+                    retention = 30
+                cutoff_day = (now_in_tz(p.context) - timedelta(days=retention)).strftime("%Y-%m-%d")
+                await self.db.run(resident.store.cleanup_runs, p.activity_retention_days, cutoff_day)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -566,11 +573,74 @@ class ActivityService:
                 """,
                 (platform_id, kind, conversation_id, BOT_ACTIVITY_SENDER_ID, since_ts),
             ).fetchall()
-        return [
-            self.display_user_name(platform_id, str(sid or ""), str(sname or ""))
-            for sid, sname, _ in rows
-            if self.display_user_name(platform_id, str(sid or ""), str(sname or ""))
-        ]
+        out: list[str] = []
+        for sid, sname, _ in rows:
+            name = self.display_user_name(platform_id, str(sid or ""), str(sname or ""))
+            if name:
+                out.append(name)
+        return out
+
+    def batch_activity_participants(
+        self, sessions: list[dict[str, Any]], since_ts: float
+    ) -> dict[tuple[str, str, str], list[str]]:
+        result: dict[tuple[str, str, str], list[str]] = {}
+        keys: list[tuple[str, str, str]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for session in sessions or ():
+            key = (
+                str(session.get("platform_id") or ""),
+                str(session.get("kind") or ""),
+                str(session.get("conversation_id") or ""),
+            )
+            result.setdefault(key, [])
+            if key not in seen:
+                seen.add(key)
+                keys.append(key)
+        if not keys:
+            return result
+        chunk_size = max(1, int(ACTIVITY_QUERY_MAX_SESSIONS))
+        with self.db.read_conn() as conn:
+            for idx in range(0, len(keys), chunk_size):
+                chunk = keys[idx : idx + chunk_size]
+                clauses = " OR ".join(
+                    "(platform_id = ? AND kind = ? AND conversation_id = ?)"
+                    for _ in chunk
+                )
+                params: list[Any] = []
+                for plat, s_kind, cid in chunk:
+                    params.extend((plat, s_kind, cid))
+                params.extend((BOT_ACTIVITY_SENDER_ID, since_ts))
+                rows = conn.execute(
+                    f"""
+                    WITH per_sender AS (
+                        SELECT platform_id, kind, conversation_id, sender_id,
+                               MAX(sender_name) AS name, MAX(ts) AS last_ts
+                        FROM activity_messages
+                        WHERE ({clauses})
+                          AND sender_id != ? AND ts >= ?
+                        GROUP BY platform_id, kind, conversation_id, sender_id
+                    ),
+                    ranked AS (
+                        SELECT platform_id, kind, conversation_id, sender_id, name, last_ts,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY platform_id, kind, conversation_id
+                                   ORDER BY last_ts DESC, sender_id ASC
+                               ) AS rn
+                        FROM per_sender
+                    )
+                    SELECT platform_id, kind, conversation_id, sender_id, name
+                    FROM ranked
+                    WHERE rn <= 8
+                    ORDER BY platform_id, kind, conversation_id, rn ASC
+                    """,
+                    params,
+                ).fetchall()
+                for platform_id, s_kind, cid, sid, sname in rows:
+                    key = (str(platform_id), str(s_kind), str(cid))
+                    name = self.display_user_name(str(platform_id), str(sid or ""), str(sname or ""))
+                    if name:
+                        result.setdefault(key, []).append(name)
+        return result
 
     def resolve_activity_conversations(self, query: str, kind: str = "") -> list[dict[str, Any]]:
         target = str(query or "").strip()
@@ -630,6 +700,7 @@ class ActivityService:
         with self.db.read_conn() as conn:
             rows = conn.execute(sql, params).fetchall()
         rows = list(reversed(rows))
+        tz = resolve_timezone(self.plugin.context)
         return [
             {
                 "id": record_id,
@@ -640,7 +711,11 @@ class ActivityService:
                 ),
                 "conversation_id": conversation_id,
                 "platform": platform_id,
-                "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)),
+                "time": (
+                    datetime.fromtimestamp(float(ts or 0), tz=tz)
+                    if tz is not None
+                    else datetime.fromtimestamp(float(ts or 0))
+                ).strftime("%Y-%m-%d %H:%M:%S"),
                 "sender": self.display_user_name(platform_id, sender_id, sender_name),
                 "sender_id": sender_id,
                 "text": text,

@@ -179,7 +179,7 @@ class ReplyChangesTest(unittest.IsolatedAsyncioTestCase):
     async def test_native_nonfinite_values_have_safe_runtime_view(self):
         plugin = self.plugin(debounce_slow_idle_seconds=float("inf"), proactive_silent_wake_target_mean_minutes=float("nan"))
         self.assertEqual(plugin.debounce_slow_idle_seconds, 1.2)
-        self.assertEqual(plugin.proactive_silent_wake_target_mean_minutes, 30)
+        self.assertEqual(plugin.proactive_silent_wake_target_mean_minutes, 45)
         self.assertIn("debounce_slow_idle_seconds", plugin.cfg.errors)
 
 

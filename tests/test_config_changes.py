@@ -311,7 +311,6 @@ class ConfigApiTest(unittest.IsolatedAsyncioTestCase):
         for name, owner, active in [
             ("selected_enabled", selected_module, True),
             ("selected_disabled", selected_module, False),
-            ("list_conversations", own_module, True),
             ("read_conversation_messages", own_module, True),
             ("send_message", own_module, False),
         ]:
@@ -330,7 +329,7 @@ class ConfigApiTest(unittest.IsolatedAsyncioTestCase):
             }):
                 kept = plugin.resident.integration.restrict(SimpleNamespace(unified_msg_origin="test:GroupMessage:1"), SimpleNamespace(func_tool=tools))
             self.assertEqual({tool.name for tool in kept.tools},
-                             {"selected_enabled", "list_conversations", "read_conversation_messages"})
+                             {"selected_enabled", "read_conversation_messages"})
 
     async def test_default_write_failure_does_not_change_active_settings(self):
         with tempfile.TemporaryDirectory() as tmp:

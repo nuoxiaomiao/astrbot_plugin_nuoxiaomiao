@@ -157,6 +157,99 @@ def extract_text(event: Any, *, strip_at_markup: bool = True) -> str:
         return ""
 
 
+_MEDIA_SUMMARY_MAX_TAGS = 8
+_MEDIA_SUMMARY_MAX_CHARS = 120
+_MEDIA_FILE_NAME_MAX_CHARS = 40
+_STICKER_HINTS = ("sticker", "meme", "emoji", "face", "表情", "动画表情")
+
+
+def _component_field(comp: Any, attr: str) -> Any:
+    if isinstance(comp, dict):
+        if attr in comp:
+            return comp.get(attr)
+        data = comp.get("data")
+        if isinstance(data, dict) and attr in data:
+            return data.get(attr)
+        return None
+    return getattr(comp, attr, None)
+
+
+def _component_kind(comp: Any) -> str:
+    if isinstance(comp, dict):
+        return str(comp.get("type") or "").strip().lower()
+    cname = type(comp).__name__
+    if cname not in {"SimpleNamespace", "object", "Unknown", "BaseMessageComponent"}:
+        return cname.lower()
+    comp_type = getattr(comp, "type", None)
+    val = getattr(comp_type, "value", comp_type)
+    text = str(val or "").strip()
+    if text and text.lower() != "unknown":
+        return text.lower()
+    return cname.lower()
+
+
+def _is_sticker_image(comp: Any) -> bool:
+    for attr in ("subtype", "sub_type", "subType"):
+        val = _component_field(comp, attr)
+        if val is None:
+            continue
+        val = getattr(val, "value", val)
+        s = str(val).strip().lower()
+        if s == "1" or any(hint in s for hint in _STICKER_HINTS):
+            return True
+    for attr in ("summary", "_type", "type"):
+        val = _component_field(comp, attr)
+        if val is None:
+            continue
+        val = getattr(val, "value", val)
+        s = str(val).strip().lower()
+        if s in {"", "image", "componenttype.image"}:
+            continue
+        if any(hint in s for hint in _STICKER_HINTS):
+            return True
+    return False
+
+
+def extract_media_summary(event: Any) -> str:
+    tags: list[str] = []
+    total_chars = 0
+    for comp in extract_components(event):
+        kind = _component_kind(comp)
+        tag = ""
+        if kind == "image":
+            tag = "[表情]" if _is_sticker_image(comp) else "[图片]"
+        elif kind in {"face", "marketface", "mface"}:
+            tag = "[表情]"
+        elif kind in {"record", "audio"}:
+            tag = "[语音]"
+        elif kind == "video":
+            tag = "[视频]"
+        elif kind == "file":
+            raw_name = _component_field(comp, "name") or _component_field(comp, "file_name") or ""
+            fname = re.sub(r"\s+", " ", str(raw_name)).strip()
+            if len(fname) > _MEDIA_FILE_NAME_MAX_CHARS:
+                fname = fname[:_MEDIA_FILE_NAME_MAX_CHARS].rstrip() + "…"
+            tag = f"[文件: {fname}]" if fname else "[文件]"
+        elif kind in {"forward", "nodes"}:
+            tag = "[合并转发]"
+        elif kind == "share":
+            tag = "[分享]"
+        elif kind == "location":
+            tag = "[位置]"
+        if not tag:
+            continue
+        if tags and tags[-1] == tag:
+            continue
+        added_len = len(tag) if not tags else len(tag) + 1
+        if len(tags) >= _MEDIA_SUMMARY_MAX_TAGS or (
+            tags and total_chars + added_len > _MEDIA_SUMMARY_MAX_CHARS
+        ):
+            break
+        tags.append(tag)
+        total_chars += added_len
+    return " ".join(tags)
+
+
 def matches_any_keyword(text: str, keywords: Any) -> bool:
     if not text or not keywords:
         return False

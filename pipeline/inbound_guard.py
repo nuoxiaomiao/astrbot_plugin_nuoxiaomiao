@@ -8,6 +8,7 @@ from pathlib import Path
 import random
 import tempfile
 import time
+import unicodedata
 from typing import Any, Callable
 
 from astrbot.api import logger
@@ -250,7 +251,6 @@ class InboundGuard:
         self._poke_cooldown_ts = BoundedTTLCache(max_size=1024, ttl_seconds=60.0)
         self._poke_lock = asyncio.Lock()
         self._typing_until: dict[str, float] = {}
-        self._warned_wake_prefixes: set[str] = set()
 
     def clear(self) -> None:
         self._states.clear()
@@ -379,24 +379,15 @@ class InboundGuard:
 
     def effective_wake_prefix(self, event: Any) -> str:
         active_prefixes = self.wake_prefixes(event)
-        configured = self.plugin.force_wake_prefix
-        if configured:
-            if active_prefixes and configured not in active_prefixes:
-                warn_key = f"{configured}:{'|'.join(active_prefixes)}"
-                if warn_key not in self._warned_wake_prefixes:
-                    self._warned_wake_prefixes.add(warn_key)
-                    logger.warning(
-                        "[%s] force_wake_prefix=%r 与会话 wake_prefix=%s 不一致；将改用 %r",
-                        DISPLAY_NAME,
-                        configured,
-                        active_prefixes,
-                        active_prefixes[0],
-                    )
-                return active_prefixes[0]
-            return configured
         if active_prefixes:
             return active_prefixes[0]
         return DEFAULT_FORCE_WAKE_PREFIX
+
+    @staticmethod
+    def _is_symbol_prefix(prefix: str) -> bool:
+        return bool(prefix) and all(
+            unicodedata.category(ch)[0] in {"P", "S"} for ch in prefix
+        )
 
     def is_command_event(self, event: Any) -> bool:
         get_extra = getattr(event, "get_extra", None)
@@ -418,8 +409,12 @@ class InboundGuard:
         ).strip()
         if not raw_text:
             return False
+        if raw_text.startswith("/") and bool(raw_text[1:].strip()):
+            return True
         return any(
-            raw_text.startswith(prefix) and bool(raw_text[len(prefix) :].strip())
+            self._is_symbol_prefix(prefix)
+            and raw_text.startswith(prefix)
+            and bool(raw_text[len(prefix) :].strip())
             for prefix in self.wake_prefixes(event)
         )
 

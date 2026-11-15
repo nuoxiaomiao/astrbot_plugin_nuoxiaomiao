@@ -18,7 +18,7 @@ from resident.autonomy import (
     BudgetProvider,
     BudgetExceeded,
 )
-from resident.store import Conflict, migrate
+from resident.store import migrate
 from tests.fakes import FakeContext, FakeEvent, make_plugin
 from tests.resident_fixtures import (
     ScriptedProvider,
@@ -88,36 +88,60 @@ class ResidentTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(Path(path + ".bak-resident-v1").exists())
             db.close()
 
-    async def test_mentions_only_mark_the_returned_context(self):
+    async def test_incremental_read_uses_latest_window_and_unshown_overflow(self):
         p = self.make()
         for i in range(25):
             self.record(p, str(i), mentioned=i == 20)
         event = FakeEvent()
-        data = await p.resident.inbox.read(
-            event, conversation="20001", mode="mentions", mark_read=True
-        )
-        self.assertEqual(data["count"], 11)
-        remaining = await p.resident.inbox.read(
-            event, conversation="20001", mode="unread"
-        )
-        self.assertEqual(remaining["count"], 14)
-        self.assertNotIn("20", [r["text"] for r in remaining["results"]])
+        data = await p.resident.inbox.read(event, conversation="20001", limit=10)
+        self.assertEqual(data["count"], 10)
+        self.assertTrue(data["marked_read"])
+        self.assertEqual([r["text"] for r in data["results"]], [str(i) for i in range(15, 25)])
+        self.assertEqual(data["results"][5]["mention_status"], "new")
+        session = {"platform_id": "aiocqhttp", "kind": "group", "conversation_id": "20001", "name": "20001"}
+        self.assertEqual(p.resident.inbox.counts("default", session)["unread"], 0)
+        again = await p.resident.inbox.read(event, conversation="20001")
+        self.assertEqual(again["status"], "no_new_messages")
 
-    async def test_history_pagination_never_marks_read(self):
+        # Paging back reads older history without false mention labels or changing read state
+        older = await p.resident.inbox.read(
+            event, conversation="20001", before_id=data["next_before_id"], limit=15
+        )
+        self.assertEqual(older["count"], 15)
+        self.assertFalse(older["marked_read"])
+        self.assertEqual(older["results"][0]["text"], "0")
+        self.assertTrue(all(r["mention_status"] == "" for r in older["results"]))
+
+        # When contiguous bot replies inside the window push recent unread external messages out of limit,
+        # unshown_unread_count and unshown_before_id allow paging back to recover them.
+        for j in range(5):
+            self.record(p, f"ext-{j}")
+        for k in range(6):
+            self.record(p, f"bot-{k}", sender="bot")
+        overflow = await p.resident.inbox.read(event, conversation="20001", limit=8)
+        self.assertEqual(overflow["count"], 8)
+        self.assertGreater(overflow["unshown_unread_count"], 0)
+        self.assertIsNotNone(overflow["unshown_before_id"])
+
+    async def test_history_pagination_never_clears_newer_unread(self):
         p = self.make()
-        for i in range(12):
+        for i in range(10):
             self.record(p, str(i))
         event = FakeEvent()
-        first = await p.resident.inbox.read(event, conversation="20001", limit=5)
-        second = await p.resident.inbox.read(
-            event, conversation="20001", limit=5, before_id=first["next_before_id"]
+        # Read first 10
+        first = await p.resident.inbox.read(event, conversation="20001", limit=10)
+        self.assertEqual(first["count"], 10)
+        # Two new unread messages arrive
+        self.record(p, "new-1")
+        self.record(p, "new-2")
+        # Paging back into older history must not clear the newer unread messages
+        older = await p.resident.inbox.read(
+            event, conversation="20001", limit=5, before_id=first["results"][-1]["id"]
         )
-        self.assertTrue(first["has_more"])
-        self.assertFalse(
-            {r["id"] for r in first["results"]} & {r["id"] for r in second["results"]}
-        )
-        unread = await p.resident.inbox.read(event, conversation="20001", mode="unread")
-        self.assertEqual(unread["count"], 12)
+        self.assertEqual(older["count"], 5)
+        self.assertFalse(older["marked_read"])
+        session = {"platform_id": "aiocqhttp", "kind": "group", "conversation_id": "20001", "name": "20001"}
+        self.assertEqual(p.resident.inbox.counts("default", session)["unread"], 2)
 
     async def test_duplicate_platform_message_and_same_number_other_platform(self):
         p = self.make()
@@ -128,12 +152,10 @@ class ResidentTest(unittest.IsolatedAsyncioTestCase):
         result = await p.resident.inbox.read(
             FakeEvent(),
             conversation="other:GroupMessage:20001",
-            mode="unread",
-            mark_read=True,
         )
         self.assertEqual(result["count"], 1)
         remaining = await p.resident.inbox.read(
-            FakeEvent(), conversation="aiocqhttp:GroupMessage:20001", mode="unread"
+            FakeEvent(), conversation="aiocqhttp:GroupMessage:20001"
         )
         self.assertEqual(remaining["count"], 1)
         with self.assertRaises(ValueError):
@@ -145,11 +167,11 @@ class ResidentTest(unittest.IsolatedAsyncioTestCase):
         self.record(p)
         event = FakeEvent()
         event.set_extra(SELF_WAKE_EVENT_EXTRA, True)
-        data = await p.resident.inbox.read(event, mode="unread")
-        self.assertEqual([r["kind"] for r in data["results"]], ["group"])
+        data = await p.resident.inbox.read(event)
+        self.assertEqual([c["kind"] for c in data["conversations"]], ["group"])
         p.activity_group_blacklist = {"20001"}
         self.assertEqual(
-            (await p.resident.inbox.read(event, mode="unread"))["count"], 0
+            (await p.resident.inbox.read(event))["count"], 0
         )
 
     async def test_successful_merged_request_marks_only_source_messages(self):
@@ -162,23 +184,14 @@ class ResidentTest(unittest.IsolatedAsyncioTestCase):
         req = ProviderRequest()
         await p.on_llm_request(event, req)
         await p.on_llm_response(event, LLMResponse(role="err"))
-        self.assertEqual(
-            (await p.resident.inbox.read(event, conversation="20001", mode="unread"))[
-                "count"
-            ],
-            3,
-        )
+        session = {"platform_id": "aiocqhttp", "kind": "group", "conversation_id": "20001", "name": "20001"}
+        self.assertEqual(p.resident.inbox.counts("default", session)["unread"], 3)
         await p.on_llm_response(
             event, LLMResponse(role="assistant", completion_text="好")
         )
-        self.assertEqual(
-            (await p.resident.inbox.read(event, conversation="20001", mode="unread"))[
-                "count"
-            ],
-            1,
-        )
+        self.assertEqual(p.resident.inbox.counts("default", session)["unread"], 1)
 
-    async def test_state_scope_and_style_approval_conflicts(self):
+    async def test_state_scope_and_update(self):
         p = self.make()
         s = p.resident.store
         s.update_state("a", "p:GroupMessage:1", "开心", 80, "甲的私事")
@@ -186,16 +199,7 @@ class ResidentTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(s.state("a", "p:GroupMessage:2")["focus"], "")
         self.assertIsNone(s.state("b", "p:GroupMessage:1")["mood"])
         with self.assertRaises(ValueError):
-            s.update_state("a", "x", "甲的私事", 50, "")
-        proposal = s.propose("a", "更简短", "平常闲聊", "hash")
-        self.assertEqual(s.style("a")["body"], "")
-        with self.assertRaises(Conflict):
-            s.change_style("a", "approve", 0, proposal["id"], base_hash="changed")
-        s.change_style("a", "approve", 0, proposal["id"], base_hash="hash")
-        with self.assertRaises(Conflict):
-            s.change_style("a", "rollback", 0, version=0)
-        s.change_style("a", "rollback", 1, version=0)
-        self.assertEqual(s.style("a"), {"version": 2, "body": ""})
+            s.update_state("a", "x", "不在枚举里的心情", 50, "")
 
     async def test_state_injection_preserves_prompt_and_conversation_history(self):
         p = self.make()
@@ -395,7 +399,9 @@ class ResidentTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok)
         self.assertEqual(outcome, "quiet")
         rows = p.resident.store.rows("SELECT * FROM resident_actions")
-        self.assertEqual(rows[0]["status"], "failed")
+        self.assertEqual(rows[0]["status"], "rejected")
+        run_row = p.resident.store.rows("SELECT status FROM resident_runs ORDER BY id DESC LIMIT 1")[0]
+        self.assertEqual(run_row["status"], "succeeded")
         self.assertEqual(
             p.resident.store.budget(datetime.now().strftime("%Y-%m-%d"))["used"], 1
         )

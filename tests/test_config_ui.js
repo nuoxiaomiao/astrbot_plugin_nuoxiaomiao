@@ -28,7 +28,7 @@ test('deriveGroups covers every schema key exactly once', () => {
     assert.ok(collected.includes(key), 'missing ' + key);
   }
   assert.ok(collected.includes('@reference'));
-  assert.equal(groups.map(g => g.title).join(','), '总览,消息合并,拦截与互动,聊天记录与参考,主动消息,自醒,QQ 官方,高级,自主状态,共享记忆与信箱');
+  assert.equal(groups.map(g => g.title).join(','), '总览,消息合并,拦截与互动,聊天记录与参考,主动消息,自醒,QQ 官方,高级,自主状态');
 });
 
 test('groupOf maps keys to their page', () => {
@@ -37,7 +37,6 @@ test('groupOf maps keys to their page', () => {
   assert.equal(ui.groupOf('include_group', groups).id, 'interaction');
   assert.equal(ui.groupOf('activity_prefetch_enabled', groups).id, 'activity');
   assert.equal(ui.groupOf('proactive_silent_wake_enabled', groups).id, 'selfwake');
-  assert.equal(ui.groupOf('vision_enabled', groups).id, 'shared_memory');
   assert.equal(ui.groupOf('qq_official_enabled', groups).id, 'qq_official');
 });
 
@@ -236,8 +235,8 @@ test('renders only the active group with Win11 cards', async () => {
   assert.equal(page.get('app').hidden, false);
   assert.equal(page.get('status-root').hidden, true);
   const navLabels = page.get('nav').querySelectorAll('.nav-label').map(el => el.textContent);
-  assert.equal(navLabels.length, 11);
-  assert.equal(navLabels[10], '运行与状态');
+  assert.equal(navLabels.length, 10);
+  assert.equal(navLabels[9], '运行与状态');
   assert.ok(page.get('groups').querySelectorAll('.card').length >= 1);
   assert.ok(page.get('groups').querySelectorAll('.page-title').length === 1);
 });
@@ -426,7 +425,7 @@ test('resident summary tiles show budget and pending work', async () => {
   const panel = await residentFixture();
   assert.equal(panel.root.querySelector('#tile-wake').textContent, '1');
   assert.equal(panel.root.querySelector('#tile-token').textContent, '15');
-  assert.equal(panel.root.querySelector('#tile-pending').textContent, '3');
+  assert.equal(panel.root.querySelector('#tile-pending').textContent, '2');
 });
 
 test('runs are collapsed by default and expand on click', async () => {
@@ -458,14 +457,6 @@ test('unknown sends and actions verify with explicit payloads', async () => {
   assert.deepEqual(panel.calls[0].body, { umo: 'qq:GroupMessage:1', action: 'review_send', send_id: 20, conclusion: 'fired' });
   panel.button('已完成').dispatch('click'); await settled();
   assert.deepEqual(panel.calls[1].body, { umo: 'qq:GroupMessage:1', action: 'review', action_id: 10, conclusion: 'succeeded', note: '' });
-});
-
-test('style proposals approve, reject and rollback with baseline versions', async () => {
-  const panel = await residentFixture();
-  panel.button('批准此提案').dispatch('click'); await settled();
-  assert.deepEqual(panel.calls[0].body, { umo: 'qq:GroupMessage:1', action: 'approve', proposal_id: 7, expected_version: 2 });
-  panel.button('回滚到此版本').dispatch('click'); await settled();
-  assert.deepEqual(panel.calls[1].body, { umo: 'qq:GroupMessage:1', action: 'rollback', version: 1, expected_version: 2 });
 });
 
 test('failed state save keeps typed focus and shows the error', async () => {
@@ -659,6 +650,38 @@ test('resident append pagination merges runs, rejects unsafe capability URLs, an
   resolveAct(copy(data1));
   await settled();
   assert.ok(root.querySelector('#run-row-9'));
+});
+
+test('resident pendingCard renders unknown_runs and submits review_run', async () => {
+  const data = residentFixtureData();
+  data.unknown_sends = [];
+  data.runs.forEach((run) => { run.actions = []; run.sends = []; });
+  data.unknown_runs = [
+    { id: 42, umo: 'qq:GroupMessage:1', started: 100, summary: '崩溃前未闭合' },
+  ];
+  const page = fixture({}, undefined, {}, data);
+  await settled();
+  const root = page.document.createElement('div');
+  page.document.documentElement.appendChild(root);
+  const posted = [];
+  page.window.AstrBotPluginPage.apiGet = async () => copy(data);
+  page.window.AstrBotPluginPage.apiPost = async (endpoint, body) => {
+    posted.push(copy(body));
+    return { ...copy(data), unknown_runs: [] };
+  };
+  residentPanel.mount(root, page.window);
+  await settled();
+  assert.ok(root.querySelectorAll('.mini-meta').some((el) => el.textContent.includes('崩溃前未闭合')));
+  findButton(root, '标记已中断').dispatch('click');
+  await settled();
+  assert.equal(posted.length, 1);
+  assert.deepEqual(posted[0], {
+    umo: 'qq:GroupMessage:1',
+    action: 'review_run',
+    run_id: 42,
+    conclusion: 'interrupted',
+    note: '',
+  });
 });
 
 test('style.css defines cluster header, subblock alignment, and search input padding rules', () => {

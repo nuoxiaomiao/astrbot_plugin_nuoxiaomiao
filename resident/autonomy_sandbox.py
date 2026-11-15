@@ -50,23 +50,26 @@ class ScopedExecutor:
             )
             return
         chunks: list[str] = []
-        error = False
+        hard_error = False
         try:
             async for result in self.original.execute(tool, run_context, **args):
                 if result is not None:
-                    error = error or bool(getattr(result, "isError", False))
+                    hard_error = hard_error or bool(getattr(result, "isError", False))
                     chunks.extend(
                         str(getattr(c, "text", ""))
                         for c in getattr(result, "content", []) or []
                     )
                 yield result
             text = "\n".join(c for c in chunks if c)
-            try:
-                payload = json.loads(text)
-                error = error or (isinstance(payload, dict) and bool(payload.get("error")))
-            except (ValueError, TypeError):
-                pass
-            store.end_action(aid, "failed" if error else "succeeded", text)
+            rejected = False
+            if not hard_error:
+                try:
+                    payload = json.loads(text)
+                    rejected = isinstance(payload, dict) and bool(payload.get("error"))
+                except (ValueError, TypeError):
+                    pass
+            action_status = "failed" if hard_error else ("rejected" if rejected else "succeeded")
+            store.end_action(aid, action_status, text)
         except RunStopped:
             store.end_action(aid, "rejected", "运行在执行前已停止，未触发外部动作")
             raise

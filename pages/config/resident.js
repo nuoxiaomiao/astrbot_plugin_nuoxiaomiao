@@ -156,15 +156,14 @@
       var sessions = data.sessions || [];
       var budget = data.budget || {};
       var runs = data.runs || [];
-      var proposals = data.proposals || [];
-      var pendingProposals = proposals.filter(function (p) { return p.status === 'pending'; });
       var unknownSends = data.unknown_sends || [];
+      var unknownRuns = data.unknown_runs || [];
       var unknownRunSends = [], unknownActions = [];
       runs.forEach(function (run) {
         (run.sends || []).forEach(function (send) { if (send.status === 'unknown') unknownRunSends.push({ run: run, send: send }); });
         (run.actions || []).forEach(function (action) { if (action.status === 'unknown') unknownActions.push({ run: run, action: action }); });
       });
-      var pendingTotal = unknownSends.length + unknownRunSends.length + unknownActions.length + pendingProposals.length;
+      var pendingTotal = unknownSends.length + unknownRunSends.length + unknownActions.length + unknownRuns.length;
 
       var bar = node('div', 'toolbar');
       var picker = node('select');
@@ -188,10 +187,9 @@
       tiles.appendChild(tile(String(pendingTotal), '待核实 / 待处理', 'tile-pending'));
       host.appendChild(tiles);
 
-      if (pendingTotal) host.appendChild(pendingCard(unknownSends, unknownRunSends, unknownActions, pendingProposals));
+      if (pendingTotal) host.appendChild(pendingCard(unknownSends, unknownRunSends, unknownActions, unknownRuns));
       host.appendChild(runsCard(runs));
       host.appendChild(stateCard());
-      host.appendChild(styleCard(proposals));
       host.appendChild(capabilitiesCard());
     }
 
@@ -203,7 +201,7 @@
       return t;
     }
 
-    function pendingCard(unknownSends, unknownRunSends, unknownActions, proposals) {
+    function pendingCard(unknownSends, unknownRunSends, unknownActions, unknownRuns) {
       var c = card('需要处理');
       var b = body(c);
       unknownSends.forEach(function (item) {
@@ -243,15 +241,16 @@
         r.appendChild(acts);
         b.appendChild(r);
       });
-      proposals.forEach(function (p) {
+      (unknownRuns || []).forEach(function (run) {
         var r = node('div', 'mini-row');
-        r.appendChild(node('span', 'mini-title', '待批风格提案 #' + p.id));
-        r.appendChild(node('p', 'mini-meta', p.reason || ''));
-        if (p.diff) r.appendChild(rawBlock('查看差异', p.diff));
+        r.appendChild(node('span', 'mini-title', '待核实的运行 · #' + run.id + ' · ' + sessionName(run.umo)));
+        r.appendChild(node('p', 'mini-meta', run.summary || ('开始于 ' + fmtTime(run.started))));
+        var note = node('input'); note.type = 'text'; note.placeholder = '核实依据（可选）'; note.setAttribute('aria-label', '核实依据');
         var acts = node('div');
-        acts.appendChild(button('批准', function () { act({ action: 'approve', proposal_id: p.id, expected_version: data.style.version }); }, 'btn primary'));
+        acts.appendChild(note);
+        acts.appendChild(button('标记已中断', function () { act({ action: 'review_run', run_id: run.id, conclusion: 'interrupted', note: note.value }); }, 'btn'));
         acts.appendChild(node('span', '', ' '));
-        acts.appendChild(button('拒绝', function () { act({ action: 'reject', proposal_id: p.id, expected_version: data.style.version }); }, 'btn'));
+        acts.appendChild(button('标记失败', function () { act({ action: 'review_run', run_id: run.id, conclusion: 'failed', note: note.value }); }, 'btn'));
         r.appendChild(acts);
         b.appendChild(r);
       });
@@ -420,43 +419,6 @@
         act({ action: 'state', mood: mood.value, intensity: Number(intensity.value), focus: focus.value });
       }, 'btn primary'));
       b.appendChild(actions);
-      return c;
-    }
-
-    function styleCard(proposals) {
-      var c = card('表达风格 · 版本 ' + (data.style ? data.style.version : 0));
-      var b = body(c);
-      b.appendChild(node('p', 'mini-meta', '基础人设由 AstrBot 管理，这里只维护经批准的风格补充。'));
-      b.appendChild(rawBlock('查看当前风格', data.style ? data.style.body : ''));
-      var pending = proposals.filter(function (p) { return p.status === 'pending'; });
-      if (pending.length) {
-        b.appendChild(node('h4', '', '待批提案 · ' + pending.length));
-        pending.forEach(function (p) {
-          var item = node('div', 'mini-row');
-          item.appendChild(node('span', 'mini-title', '#' + p.id + ' · 基准版本 ' + p.base_version));
-          item.appendChild(node('p', 'mini-meta', p.reason || ''));
-          if (p.diff) item.appendChild(rawBlock('查看差异', p.diff));
-          var acts = node('div');
-          acts.appendChild(button('批准此提案', function () { act({ action: 'approve', proposal_id: p.id, expected_version: data.style.version }); }, 'btn primary'));
-          acts.appendChild(node('span', '', ' '));
-          acts.appendChild(button('拒绝此提案', function () { act({ action: 'reject', proposal_id: p.id, expected_version: data.style.version }); }, 'btn'));
-          item.appendChild(acts);
-          b.appendChild(item);
-        });
-      }
-      var versions = (data.versions || []).filter(function (v) { return v.version !== data.style.version; });
-      if (versions.length) {
-        var det = node('details', 'raw');
-        det.appendChild(node('summary', '', '历史版本 · ' + versions.length));
-        versions.forEach(function (v) {
-          var item = node('div', 'mini-row');
-          item.appendChild(node('span', 'mini-title', '版本 ' + v.version));
-          item.appendChild(rawBlock('内容', v.body));
-          item.appendChild(button('回滚到此版本', function () { act({ action: 'rollback', version: v.version, expected_version: data.style.version }); }, 'btn'));
-          det.appendChild(item);
-        });
-        b.appendChild(det);
-      }
       return c;
     }
 

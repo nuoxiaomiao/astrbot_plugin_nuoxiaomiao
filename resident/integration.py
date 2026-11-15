@@ -5,22 +5,27 @@ from __future__ import annotations
 from pathlib import Path
 
 if __package__ and "." in __package__:
-    from ..config_support import atomic_write_json, split_list_text
+    from ..config_support import (
+        atomic_write_json,
+        split_list_text,
+        strip_removed_config_keys,
+    )
 else:
-    from config_support import atomic_write_json, split_list_text
+    from config_support import (
+        atomic_write_json,
+        split_list_text,
+        strip_removed_config_keys,
+    )
 
 BASE_TOOLS = frozenset(
     {
-        "list_conversations",
         "read_conversation_messages",
-        "read_image",
         "send_message",
         "recall_long_term_memory",
         "read_memory_evidence",
         "astrhe_read_plan",
         "astrhe_todo_update",
         "nuoxiaomiao_update_state",
-        "nuoxiaomiao_propose_style",
     }
 )
 CAPABILITIES = (
@@ -32,6 +37,7 @@ CAPABILITIES = (
     ("search", "互联网搜索", "AnySearch / AstrBot", ("anysearch_search", "web_search"), "astrbot_plugin_anysearch"),
 )
 DISPATCH_NAMES = frozenset({"astrna_parallel_tool_use", "task", "mcp", "use_tool", "execute_tool"})
+REMOVED_TOOLS = frozenset({"list_conversations", "read_image", "nuoxiaomiao_propose_style"})
 
 
 def is_dispatcher(tool) -> bool:
@@ -117,10 +123,11 @@ class Integration:
             for t in self.catalog()
             if t["plugin"] in legacy and t["active"] and t["selectable"] and not t["base"]
         )
+        selected -= REMOVED_TOOLS
         backup = Path(self.host.activity_db_file()).parent / "config.before-resident-v1.json"
         if not backup.exists():
             atomic_write_json(backup, dict(raw_cfg))
-        updated = dict(raw_cfg)
+        updated = strip_removed_config_keys(dict(raw_cfg))
         updated.update(resident_extra_tools=sorted(selected), resident_tools_migrated=True)
         self.host.commit_web_config(updated)
         self.service.store.set_meta(
@@ -131,12 +138,11 @@ class Integration:
     def allowed(self):
         p = self.service.plugin
         names = set(BASE_TOOLS) | set(p.resident_extra_tools)
+        names -= REMOVED_TOOLS
         if not p.resident_state_enabled:
-            names -= {"nuoxiaomiao_update_state", "nuoxiaomiao_propose_style"}
+            names -= {"nuoxiaomiao_update_state"}
         if not p.activity_buffer_enabled or not p.activity_tool_enabled:
-            names -= {"list_conversations", "read_conversation_messages", "read_image"}
-        elif not getattr(p, "vision_enabled", False):
-            names -= {"read_image"}
+            names -= {"read_conversation_messages"}
         if not p.proactive_enabled:
             names -= {"send_message"}
         return names

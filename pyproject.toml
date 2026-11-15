@@ -1,6 +1,6 @@
 [project]
 name = "astrbot-plugin-nuoxiaomiao"
-version = "2.5.2"
+version = "2.5.3"
 description = "糯小喵 AstrBot 插件"
 readme = "README.md"
 requires-python = ">=3.10"

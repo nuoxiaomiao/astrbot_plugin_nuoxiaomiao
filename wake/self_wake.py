@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+import inspect
 import json
 import random
 import time
+from types import SimpleNamespace
 from typing import Any, Callable
 
 from astrbot.api import logger
@@ -15,18 +17,22 @@ if __package__ and "." in __package__:
     from ..infra.constants import (
         BOT_ACTIVITY_SENDER_ID,
         DISPLAY_NAME,
+        SELF_WAKE_EVENT_EXTRA,
         SELF_WAKE_FALLBACK_LOOKBACK_MINUTES,
         SELF_WAKE_FALLBACK_MAX_MESSAGES,
         SELF_WAKE_OUTCOME_ERROR,
         SELF_WAKE_OUTCOME_QUIET,
+        SELF_WAKE_OUTCOME_SKIPPED,
         SELF_WAKE_OUTCOME_SPOKE,
+        SELF_WAKE_UMO,
         SILENT_WAKE_ALPHA_MAX,
         SILENT_WAKE_ALPHA_MIN,
         SILENT_WAKE_ALPHA_SEARCH_STEPS,
         SILENT_WAKE_TICK_SECONDS,
+        SYNTHETIC_EVENT_EXTRA,
     )
     from ..infra.providers import ProviderResolver
-    from ..infra.runtime import now_in_tz
+    from ..infra.runtime import group_scope_allows, message_id_of, now_in_tz
     from ..qq_official import platform_id_of_inst
     from ..resident.autonomy_budget import CURRENT_RUN, BudgetExceeded
     from ..resident.ports import build_agent_config as _build_agent_cfg
@@ -34,18 +40,22 @@ else:
     from infra.constants import (
         BOT_ACTIVITY_SENDER_ID,
         DISPLAY_NAME,
+        SELF_WAKE_EVENT_EXTRA,
         SELF_WAKE_FALLBACK_LOOKBACK_MINUTES,
         SELF_WAKE_FALLBACK_MAX_MESSAGES,
         SELF_WAKE_OUTCOME_ERROR,
         SELF_WAKE_OUTCOME_QUIET,
+        SELF_WAKE_OUTCOME_SKIPPED,
         SELF_WAKE_OUTCOME_SPOKE,
+        SELF_WAKE_UMO,
         SILENT_WAKE_ALPHA_MAX,
         SILENT_WAKE_ALPHA_MIN,
         SILENT_WAKE_ALPHA_SEARCH_STEPS,
         SILENT_WAKE_TICK_SECONDS,
+        SYNTHETIC_EVENT_EXTRA,
     )
     from infra.providers import ProviderResolver
-    from infra.runtime import now_in_tz
+    from infra.runtime import group_scope_allows, message_id_of, now_in_tz
     from qq_official import platform_id_of_inst
     from resident.autonomy_budget import CURRENT_RUN, BudgetExceeded
     from resident.ports import build_agent_config as _build_agent_cfg
@@ -71,13 +81,123 @@ class SelfWakeService:
         self._task: asyncio.Task[None] | None = None
         self._last_human_ts: float | None = None
         self._fail_until: float = 0.0
+        self._skip_until: float = 0.0
         self._last_provider_id: str = ""
+        self._quiet_streak: int | None = None
 
     def invalidate_alpha(self) -> None:
         self._alpha_cache = None
 
+    def quiet_streak(self) -> int:
+        if self._quiet_streak is None:
+            val = 0
+            try:
+                resident = self._resident_getter()
+                store = getattr(resident, "store", None)
+                if store is not None:
+                    val = max(0, int(store.meta("self_wake_quiet_streak", "0") or 0))
+            except Exception:
+                val = 0
+            self._quiet_streak = val
+        return self._quiet_streak
+
+    def set_quiet_streak(self, n: int) -> None:
+        try:
+            val = max(0, int(n))
+        except (TypeError, ValueError):
+            val = 0
+        self._quiet_streak = val
+        try:
+            resident = self._resident_getter()
+            store = getattr(resident, "store", None)
+            if store is not None:
+                store.set_meta("self_wake_quiet_streak", str(val))
+        except Exception:
+            pass
+
     def mark_human_activity(self, ts: float | None = None) -> None:
         self._last_human_ts = time.time() if ts is None else ts
+        self.set_quiet_streak(0)
+
+    def should_reset_quiet_timer(self, event: Any, *, keyword_woken: bool = False) -> bool:
+        if not getattr(self.plugin, "enabled", True):
+            return False
+        guard = getattr(self.plugin, "guard", None) or getattr(self.activity, "guard", None)
+        if guard is not None:
+            if guard.is_poke_event(event) or guard.is_typing_notice(event):
+                return False
+        get_extra = getattr(event, "get_extra", None)
+        if callable(get_extra):
+            if get_extra(SYNTHETIC_EVENT_EXTRA) or get_extra(SELF_WAKE_EVENT_EXTRA):
+                return False
+        merger = getattr(self.plugin, "merger", None)
+        if merger is not None and callable(getattr(merger, "is_synthetic_id", None)):
+            mid = message_id_of(event)
+            if mid and merger.is_synthetic_id(mid):
+                return False
+        get_sender = getattr(event, "get_sender_id", None)
+        get_self = getattr(event, "get_self_id", None)
+        sender_id = str((get_sender() if callable(get_sender) else "") or "").strip()
+        self_id = str((get_self() if callable(get_self) else "") or "").strip()
+        if not sender_id or (self_id and sender_id == self_id):
+            return False
+        blocked = getattr(self.plugin, "blocked_users", set()) or set()
+        if sender_id in blocked:
+            return False
+        if guard is not None and guard.is_command_event(event):
+            return False
+        try:
+            is_private = bool(event.is_private_chat())
+        except Exception:
+            is_private = False
+        if is_private:
+            return bool(
+                getattr(self.plugin, "activity_record_private", False)
+                or self.targets.person_allowed(sender_id)
+            )
+        get_group = getattr(event, "get_group_id", None)
+        gid = str((get_group() if callable(get_group) else "") or "").strip()
+        if gid:
+            # 对齐 IRMIA：普通未 @ 机器人的群聊水群只进信箱，不重置心跳安静计时；
+            # 只有真正触发/点名机器人的消息才视作与她互动并复位计时。
+            is_direct_call = bool(keyword_woken)
+            if not is_direct_call and guard is not None and callable(getattr(guard, "is_dialogue_trigger", None)):
+                try:
+                    is_direct_call = bool(guard.is_dialogue_trigger(event))
+                except Exception:
+                    is_direct_call = False
+            if not is_direct_call and hasattr(self.activity, "mentioned_by_real_at"):
+                try:
+                    is_direct_call = bool(self.activity.mentioned_by_real_at(event))
+                except Exception:
+                    is_direct_call = False
+            if not is_direct_call:
+                return False
+            group = getattr(getattr(event, "message_obj", None), "group", None)
+            gname = str(getattr(group, "group_name", "") or "").strip()
+            if not gname and hasattr(self.activity, "conversation_display_name"):
+                try:
+                    gname = str(self.activity.conversation_display_name(event, "group") or "").strip()
+                except Exception:
+                    gname = ""
+            if guard is not None:
+                group_ok = guard.event_group_allowed(
+                    event,
+                    self.plugin.activity_group_whitelist,
+                    self.plugin.activity_group_blacklist,
+                )
+            else:
+                get_plat = getattr(event, "get_platform_id", None)
+                plat = str((get_plat() if callable(get_plat) else "") or "").strip()
+                group_ok = group_scope_allows(
+                    gid,
+                    gname,
+                    self.plugin.activity_group_whitelist,
+                    self.plugin.activity_group_blacklist,
+                    plat,
+                )
+            return bool(group_ok or self.targets.group_allowed(gid, gname))
+        return True
 
     def solve_alpha(self) -> float:
         if self._alpha_cache is not None:
@@ -125,19 +245,33 @@ class SelfWakeService:
         return roll_val < probability, probability
 
     def budget_left(self) -> bool:
+        limit = int(getattr(self.plugin, "proactive_silent_wake_daily_budget", 0) or 0)
+        if limit <= 0:
+            return True
         day = now_in_tz(self.plugin.context).strftime("%Y-%m-%d")
         resident = self._resident_getter()
         budget = resident.store.budget(day)
-        return budget["used"] < self.plugin.proactive_silent_wake_daily_budget
+        return budget["used"] < limit
 
     def init_baseline(self) -> None:
         try:
             with self.activity.db.read_conn() as conn:
                 row = conn.execute(
-                    "SELECT MAX(ts) FROM activity_messages WHERE sender_id != ?",
+                    "SELECT MAX(ts) FROM activity_messages "
+                    "WHERE sender_id = ? OR kind = 'private' OR mentioned = 1",
                     (BOT_ACTIVITY_SENDER_ID,),
                 ).fetchone()
-            ts = float(row[0] or 0) if row else 0.0
+                wake_ts = 0.0
+                try:
+                    run_row = conn.execute(
+                        "SELECT MAX(COALESCE(ended, started)) FROM resident_runs "
+                        "WHERE outcome IN (?, ?)",
+                        (SELF_WAKE_OUTCOME_QUIET, SELF_WAKE_OUTCOME_SPOKE),
+                    ).fetchone()
+                    wake_ts = float(run_row[0] or 0) if run_row else 0.0
+                except Exception:
+                    wake_ts = 0.0
+            ts = max(float(row[0] or 0) if row else 0.0, wake_ts)
             self._last_human_ts = ts if ts > 0 else time.time()
         except Exception:
             self._last_human_ts = time.time()
@@ -163,11 +297,11 @@ class SelfWakeService:
                 if not (p.enabled and p.proactive_enabled and p.proactive_silent_wake_enabled):
                     continue
                 now = time.time()
-                if self.proactive.quiet_adjust(now) > now + 1:
-                    continue
                 if not self.budget_left():
                     continue
-                if now < self._fail_until:
+                if now < self._fail_until or now < self._skip_until:
+                    continue
+                if not self.activity.admin_ids():
                     continue
                 if self._last_human_ts is None:
                     self.init_baseline()
@@ -177,7 +311,7 @@ class SelfWakeService:
                 if not hit:
                     continue
                 logger.info(
-                    "[%s] 静默自醒：已安静 %.0f 分钟（当拍概率 %.3f，随机 %.3f），起来看一眼",
+                    "[%s] 自醒触发：距上次直接互动/自醒 %.0f 分钟（当拍概率 %.3f，随机 %.3f），起来看一眼",
                     DISPLAY_NAME,
                     quiet,
                     probability,
@@ -188,13 +322,20 @@ class SelfWakeService:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.debug("[%s] 静默自醒出错: %s", DISPLAY_NAME, exc)
+                logger.debug("[%s] 自醒出错: %s", DISPLAY_NAME, exc)
 
     def settle_turn(self, ok: bool, outcome: str, now: float) -> None:
         if not ok:
             self._fail_until = now + 1800
             return
+        if outcome == SELF_WAKE_OUTCOME_SKIPPED:
+            self._skip_until = now + 300
+            return
         self._last_human_ts = time.time()
+        if outcome == SELF_WAKE_OUTCOME_QUIET:
+            self.set_quiet_streak(self.quiet_streak() + 1)
+        elif outcome in (SELF_WAKE_OUTCOME_SPOKE, "postponed"):
+            self.set_quiet_streak(0)
 
     async def run_turn(self, quiet_minutes: float, probability: float, roll_val: float) -> tuple[bool, str]:
         return await self._resident_getter().autonomy.run(quiet_minutes, probability, roll_val)
@@ -205,16 +346,14 @@ class SelfWakeService:
     @staticmethod
     def self_wake_prompt(quiet_minutes: float, context: Any = None) -> str:
         cur = now_in_tz(context) if context is not None else datetime.now()
-        return (
-            f"现在是 {cur:%Y-%m-%d %H:%M}。安静了约 {int(quiet_minutes)} 分钟，你醒来了。\n"
-            "这是一轮自主活动，不是真人提出的新要求。先参考当前状态、已有计划与未读概况，再决定做什么。\n"
-            "可用 list_conversations 查看未读数；用 read_conversation_messages 的 mode=unread 或 mentions、"
-            "mark_read=true 阅读实际未读，before_id 可翻页。只处理你确实看到的消息。\n"
-            "若本轮提供 astrhe_read_plan 和 astrhe_todo_update，沿用已有计划与待办；日记、复盘由 AstrHe 管理。"
-            "记忆需要时用已有检索工具，关系资料沿用关系本。缺少工具时不要假装调用。\n"
-            "你可以维护心情和本会话关注点、提出风格建议；想说话时调用 send_message，只向允许目标发送。\n"
-            "没有值得做的事可以安静结束，不必为了完成步骤强行调用工具或发言。不要重复已完成的动作。"
-        )
+        lines = [
+            f"现在是 {cur:%Y-%m-%d %H:%M}。距离上次直接互动或自醒已过去约 {int(quiet_minutes)} 分钟，你醒来了。",
+            "这是一轮独立自主活动，不是真人提出的新要求；没有值得做的事时直接安静结束（不调工具、不发言）完全正常，不必为了完成步骤强行动作，也不要重复已完成的动作。",
+            "如需查看跨会话消息，使用 read_conversation_messages：不传 conversation 可列出可用会话与概况，传入 conversation 可读取上次查看之后的新增未读，传入 before_id 可往前翻页。只依据你实际看到的消息判断，不要凭印象脑补。",
+            "如需对外说话，send_message 是唯一向允许目标发送消息的途径，且必须明确指定 target（群:...、私聊:... 或完整 umo）；本轮直接输出的回复文本不会发送给任何聊天对象。",
+            "你也可以按需通过 nuoxiaomiao_update_state 维护当前心情与关注点。",
+        ]
+        return "\n".join(lines)
 
     def _last_human_activity_map(self) -> dict[tuple[str, str, str], float]:
         try:
@@ -235,8 +374,15 @@ class SelfWakeService:
                     "SELECT platform_id FROM activity_messages WHERE kind = ? AND conversation_id = ? ORDER BY id DESC LIMIT 1",
                     (kind, conversation_id),
                 ).fetchone()
-            if row and str(row[0] or "").strip():
-                return str(row[0]).strip()
+                if row and str(row[0] or "").strip():
+                    return str(row[0]).strip()
+                if kind == "private":
+                    row2 = conn.execute(
+                        "SELECT platform_id FROM activity_messages WHERE sender_id = ? AND platform_id != '' ORDER BY id DESC LIMIT 1",
+                        (conversation_id,),
+                    ).fetchone()
+                    if row2 and str(row2[0] or "").strip():
+                        return str(row2[0]).strip()
         except Exception:
             pass
         insts = self.activity.platform_insts()
@@ -246,46 +392,79 @@ class SelfWakeService:
                 return only_id
         return ""
 
+    async def _session_unread_counts(
+        self, resident: Any, pool: list[dict[str, Any]]
+    ) -> dict[tuple[str, str, str], dict[str, Any]]:
+        counts_map: dict[tuple[str, str, str], dict[str, Any]] = {}
+        if resident is None or not pool:
+            return counts_map
+        inbox = getattr(resident, "inbox", None)
+        if inbox is None:
+            return counts_map
+        persona = "default"
+        try:
+            persona_svc = getattr(resident, "persona", None)
+            if persona_svc is not None and callable(getattr(persona_svc, "resolve", None)):
+                top = pool[0]
+                umo = top.get("umo") or (
+                    f"{top['platform_id']}:{'GroupMessage' if top['kind'] == 'group' else 'FriendMessage'}:{top['conversation_id']}"
+                )
+                if callable(getattr(resident, "web_event", None)):
+                    resolved_p, _ = await persona_svc.resolve(resident.web_event(umo))
+                    if resolved_p and not str(resolved_p).startswith("@session:"):
+                        persona = str(resolved_p)
+        except Exception:
+            persona = "default"
+
+        batch_fn = getattr(inbox, "batch_counts", None)
+        used_batch = False
+        if callable(batch_fn):
+            try:
+                res = batch_fn(persona, pool)
+                if inspect.isawaitable(res):
+                    res = await res
+                if isinstance(res, dict):
+                    matched = 0
+                    for s in pool:
+                        key = (s["platform_id"], s["kind"], s["conversation_id"])
+                        umo = s.get("umo") or (
+                            f"{s['platform_id']}:{'GroupMessage' if s['kind'] == 'group' else 'FriendMessage'}:{s['conversation_id']}"
+                        )
+                        entry = res.get(key) if key in res else res.get(umo)
+                        if isinstance(entry, dict):
+                            counts_map[key] = entry
+                            matched += 1
+                    if len(res) == 0 or matched > 0:
+                        used_batch = True
+            except Exception:
+                counts_map = {}
+
+        if not used_batch and callable(getattr(inbox, "counts", None)):
+            for s in pool:
+                key = (s["platform_id"], s["kind"], s["conversation_id"])
+                try:
+                    c = inbox.counts(persona, s)
+                    if inspect.isawaitable(c):
+                        c = await c
+                    if isinstance(c, dict):
+                        counts_map[key] = c
+                except Exception:
+                    pass
+        return counts_map
+
     async def pick_session(self) -> dict[str, Any] | None:
-        human_ts = self._last_human_activity_map()
-        candidates: list[tuple[str, str, str]] = []
-        for item in self.activity.activity_sessions("all"):
-            kind, cid = item["kind"], item["conversation_id"]
-            key = (item["platform_id"], kind, cid)
-            allowed = (
-                self.targets.group_allowed(cid, item.get("name", ""))
-                if kind == "group"
-                else self.targets.person_allowed(cid)
-            )
-            if allowed and human_ts.get(key, 0) > 0:
-                candidates.append(key)
-        candidates.sort(key=lambda k: human_ts[k], reverse=True)
-        if not candidates:
-            for kind, ids in (
-                ("group", self.plugin.proactive_allow_groups),
-                ("private", self.plugin.proactive_target_whitelist),
-            ):
-                for cid in sorted(ids):
-                    platform = self.activity_platform_of(kind, cid)
-                    if platform:
-                        candidates.append((platform, kind, cid))
-        for platform, kind, cid in candidates:
-            return {
-                "kind": kind,
-                "id": cid,
-                "platform_id": platform,
-                "umo": f"{platform}:{'GroupMessage' if kind == 'group' else 'FriendMessage'}:{cid}",
-            }
-        return None
+        return {
+            "kind": "private",
+            "id": "self_wake",
+            "platform_id": "nuoxiaomiao",
+            "umo": SELF_WAKE_UMO,
+        }
 
     async def select_provider(self) -> Any:
         resolver = ProviderResolver(self.plugin.context)
         judge_id = str(getattr(self.plugin, "proactive_judge_provider_id", "") or "").strip()
-        if judge_id:
-            provider = await resolver.by_id(judge_id)
-        else:
-            provider = await resolver.session_default()
-        if provider is None or not callable(getattr(provider, "text_chat", None)):
+        provider = await (resolver.by_id(judge_id) if judge_id else resolver.session_default())
+        if provider is None:
             raise RuntimeError(f"找不到可用对话模型：{judge_id or '全局默认'}")
         return provider
 
@@ -335,8 +514,39 @@ class SelfWakeService:
 
     def _heartbeat_activity_view(self) -> list[dict[str, Any]]:
         try:
+            sessions = self.activity.activity_sessions(
+                "all" if self.plugin.proactive_context_other_private else "group"
+            )
+            resident = None
+            try:
+                resident = self._resident_getter()
+            except Exception:
+                resident = None
+            inbox = getattr(resident, "inbox", None) if resident is not None else None
+            filtered: list[dict[str, Any]] = []
+            for session in sessions:
+                if session.get("kind") == "private" and not self.plugin.proactive_context_other_private:
+                    continue
+                if inbox is not None and callable(getattr(inbox, "allowed", None)):
+                    if not inbox.allowed(session):
+                        continue
+                else:
+                    if session.get("kind") == "group":
+                        if not group_scope_allows(
+                            session["conversation_id"],
+                            session.get("name", ""),
+                            self.plugin.activity_group_whitelist,
+                            self.plugin.activity_group_blacklist,
+                            session["platform_id"],
+                        ):
+                            continue
+                    elif not self.plugin.activity_record_private:
+                        continue
+                filtered.append(session)
+            if not filtered:
+                return []
             return self.activity.query_activity_messages(
-                sessions=None,
+                sessions=filtered,
                 kind="" if self.plugin.proactive_context_other_private else "group",
                 after_ts=time.time() - SELF_WAKE_FALLBACK_LOOKBACK_MINUTES * 60,
                 sender="",
@@ -435,11 +645,53 @@ class SelfWakeService:
         self._last_provider_id = ""
         persona_prompt = ""
         try:
-            persona = await self.plugin.context.persona_manager.get_default_persona_v3()
-            persona_prompt = str(getattr(persona, "system_prompt", "") or "")
+            persona_mgr = getattr(self.plugin.context, "persona_manager", None)
+            if persona_mgr is not None:
+                p_obj = await persona_mgr.get_default_persona_v3()
+                if isinstance(p_obj, dict):
+                    persona_prompt = str(p_obj.get("prompt") or p_obj.get("system_prompt") or "")
+                elif p_obj is not None:
+                    persona_prompt = str(
+                        getattr(p_obj, "prompt", "") or getattr(p_obj, "system_prompt", "") or ""
+                    )
         except Exception:
             persona_prompt = ""
         prompt = self.build_heartbeat_prompt(silent_minutes)
+        resident = None
+        try:
+            resident = self._resident_getter()
+        except Exception:
+            resident = None
+        if resident is not None and getattr(resident, "persona", None) is not None:
+            try:
+                run = CURRENT_RUN.get()
+                state_event = getattr(run, "event", None) if run is not None else None
+                if state_event is None:
+                    picked = await self.pick_session()
+                    if picked and picked.get("umo") and callable(getattr(resident, "web_event", None)):
+                        state_event = resident.web_event(picked["umo"])
+                    else:
+                        state_event = SimpleNamespace(
+                            unified_msg_origin="",
+                            get_platform_name=lambda: "",
+                            get_platform_id=lambda: "",
+                        )
+                from astrbot.api.provider import ProviderRequest
+
+                overlay_req = ProviderRequest(prompt="")
+                await resident.persona.inject(state_event, overlay_req)
+                state_parts = [
+                    str(getattr(part, "text", "") or "").strip()
+                    for part in (getattr(overlay_req, "extra_user_content_parts", None) or [])
+                    if str(getattr(part, "text", "") or "").strip()
+                ]
+                state_ref = "\n".join(state_parts)
+                if not state_ref and str(getattr(overlay_req, "system_prompt", "") or "").strip():
+                    state_ref = str(overlay_req.system_prompt).strip()
+                if state_ref:
+                    prompt = f"{state_ref}\n\n{prompt}"
+            except Exception:
+                pass
         judge_id = str(getattr(self.plugin, "proactive_judge_provider_id", "") or "").strip()
         provider_source = f"配置指定:{judge_id}" if judge_id else "全局默认"
         try:
@@ -449,7 +701,11 @@ class SelfWakeService:
             logger.warning("[%s] 巡检判断取模型失败（%s）: %s", DISPLAY_NAME, provider_source, exc)
             return None, False
         try:
-            active = self._resident_getter().autonomy.wrap_provider(provider) if CURRENT_RUN.get() is not None else provider
+            active = (
+                resident.autonomy.wrap_provider(provider)
+                if (resident is not None and CURRENT_RUN.get() is not None)
+                else provider
+            )
             resp = await asyncio.wait_for(
                 active.text_chat(prompt=prompt, system_prompt=persona_prompt or None),
                 timeout=120,
@@ -469,52 +725,42 @@ class SelfWakeService:
         elif kind in {"私聊", "private"}:
             kind = "private"
         else:
-            return {"error": "决策里没有可识别的 target_kind（group/private）"}
+            return {"status": "skipped", "error": "决策里没有可识别的 target_kind（group/private）"}
         target = str(decision.get("target") or "").strip()
         note = str(decision.get("note") or "").strip()
         if not target or not note:
-            return {"error": "决策缺少 target 或 note"}
-        if kind == "group":
-            group_id, group_name = self.targets.match_allowed_group(target)
-            if not group_id:
-                return {"error": f"群 {target} 不在主人允许的名单里"}
-            platform_id = self.activity_platform_of("group", group_id)
-            if not platform_id:
-                return {"error": f"查不到群 {group_id} 所在的平台"}
-            resolved = {
-                "platform_id": platform_id,
-                "kind": "group",
-                "id": group_id,
-                "name": group_name or group_id,
-                "umo": f"{platform_id}:GroupMessage:{group_id}",
-                "desc": f"群「{group_name or group_id}」",
-            }
-        else:
-            qq = ""
-            name = ""
-            if target.isdigit():
-                qq = target
-                name = self.targets.person_display_name(qq)
-            else:
-                qq, name = self.targets.lookup_person_qq(target)
-                if not qq and (self.targets.person_display_name(target) or target in self.plugin.proactive_target_whitelist):
-                    qq = target
-                    name = self.targets.person_display_name(target) or target
-            if not qq or not self.targets.person_allowed(qq):
-                return {"error": f"人 {target} 不在主人允许的白名单里"}
-            platform_id = self.activity_platform_of("private", qq)
-            if not platform_id:
-                return {"error": f"查不到 {qq} 所在的平台"}
-            resolved = {
-                "platform_id": platform_id,
-                "kind": "private",
-                "id": qq,
-                "name": name or qq,
-                "umo": f"{platform_id}:FriendMessage:{qq}",
-                "desc": f"私聊「{name or qq}」",
-            }
+            return {"status": "skipped", "error": "决策缺少 target 或 note"}
+
+        target_spec = target if ":" in target and target.count(":") >= 2 else (
+            f"群:{target}" if kind == "group" else f"私聊:{target}"
+        )
+        dummy_event = SimpleNamespace(
+            unified_msg_origin=SELF_WAKE_UMO,
+            get_platform_id=lambda: "",
+            get_platform_name=lambda: "",
+            get_group_id=lambda: "",
+            get_sender_id=lambda: "",
+            get_sender_name=lambda: "",
+            is_private_chat=lambda: True,
+        )
+        resolved = self.targets.resolve_target(dummy_event, target_spec)
+        if "error" in resolved:
+            return {"status": "skipped", "error": resolved["error"]}
+        if not str(resolved.get("platform_id") or "").strip():
+            return {"status": "skipped", "error": f"查不到 {target} 所在的平台"}
+
+        intent = f"（你自己在空闲时想到的）{note}"
+        schedule_fn = getattr(self.proactive, "schedule_or_deliver", None)
+        if callable(schedule_fn):
+            return await schedule_fn(
+                resolved,
+                intent,
+                "",
+                "",
+                source_umo=SELF_WAKE_UMO,
+            )
         return await self.proactive.deliver_message(
-            resolved, f"（你自己在空闲时想到的）{note}", "", "", source_umo=str(resolved.get("umo") or "")
+            resolved, intent, "", "", source_umo=SELF_WAKE_UMO
         )
 
     async def run_fallback(self, row: dict[str, Any], quiet_minutes: float) -> tuple[bool, str]:
@@ -523,17 +769,25 @@ class SelfWakeService:
         row["provider_id"] = self._last_provider_id
         row["ended_ts"] = time.time()
         if not judge_ok:
+            row["outcome"] = SELF_WAKE_OUTCOME_ERROR
             if CURRENT_RUN.get() is None:
                 self.record_run_meta(row)
             return False, SELF_WAKE_OUTCOME_ERROR
+        ok = True
         outcome = SELF_WAKE_OUTCOME_QUIET
         if decision:
             result = await self.deliver_heartbeat_decision(decision) or {}
-            if str(result.get("status") or "") == "sent":
+            status = str(result.get("status") or "").strip().lower()
+            if status in ("sent", "postponed"):
                 row["said"] = True
                 row["sent_to"] = str(decision.get("target") or "")
                 outcome = SELF_WAKE_OUTCOME_SPOKE
+            elif status == "skipped":
+                outcome = SELF_WAKE_OUTCOME_SKIPPED
+            else:
+                outcome = SELF_WAKE_OUTCOME_ERROR
+                ok = False
         row["outcome"] = outcome
         if CURRENT_RUN.get() is None:
             self.record_run_meta(row)
-        return True, outcome
+        return ok, outcome

@@ -60,6 +60,7 @@ SSRF_PRIVATE_NETWORKS = (
 )
 
 SELF_WAKE_EVENT_EXTRA = "nuoxiaomiao_self_wake"
+SELF_WAKE_UMO = "nuoxiaomiao:FriendMessage:self_wake"
 
 UNTRUSTED_OPEN = "<untrusted_data>"
 UNTRUSTED_CLOSE = "</untrusted_data>"
@@ -73,6 +74,7 @@ SELF_WAKE_OUTCOME_SPOKE = "spoke"
 SELF_WAKE_OUTCOME_SKIPPED = "skipped"
 SELF_WAKE_OUTCOME_ERROR = "error"
 SELF_WAKE_RUN_RETENTION_DAYS = 7
+SELF_WAKE_IDLE_REMINDER_BEATS = (2, 5)
 
 ACTIVITY_DB_NAME = "activity.db"
 ACTIVITY_PRUNE_INTERVAL_SECONDS = 3600.0
@@ -83,10 +85,11 @@ ACTIVITY_PARTICIPANTS_WINDOW_SECONDS = 86400.0
 
 CAPABILITY_HINT_ACTIVITY = (
     "当用户问「别的群刚才在聊什么」「他们说过什么」「群里有人找我吗」，"
-    "或让你翻聊天记录时，先调用 list_conversations 列会话、再用 "
-    "read_conversation_messages 按人、时间、关键词翻记录——翻到什么说什么、别脑补；"
-    "不确定有哪些会话就先调 list_conversations；"
-    "按工具返回的权限结果处理，无权限时说明无法查看。"
+    "或让你翻聊天记录时，调用 read_conversation_messages："
+    "不传 conversation 时直接列出其它会话（含未读数）；"
+    "传入 conversation 时默认只读上次查看之后新增的增量未读消息；"
+    "传 before_id 可往前翻更早的历史，传 after/sender/keyword 可按时间、发言人或关键词检索——"
+    "翻到什么说什么、绝不脑补编造；按工具返回的权限结果处理，无权限时说明无法查看。"
 )
 CAPABILITY_HINT_PROACTIVE = (
     "当用户让你转告/通知某人、或你自己想对别的会话说一句话时，调用 send_message"
@@ -112,30 +115,6 @@ SILENT_WAKE_ALPHA_MAX = 256.0
 SILENT_WAKE_ALPHA_SEARCH_STEPS = 200
 
 BOT_ACTIVITY_SENDER_ID = "bot"
-
-LMEM_CONTEXT_HEADER = "[长期记忆参考] 下面是检索到的相关长期记忆，回答时可以参考，不要逐字复述："
-LMEM_CONTEXT_FOOTER = "[长期记忆参考结束]"
-
-DEFAULT_LMEM_GATEWAY_KEYWORDS = [
-    "还记得",
-    "记不记得",
-    "忘了吗",
-    "忘了没",
-    "回忆",
-    "上次",
-    "之前",
-    "以前",
-    "那天",
-    "当时",
-    "早就说过",
-    "我说过",
-    "答应",
-    "约定",
-    "我的喜好",
-    "我喜欢",
-    "我的生日",
-    "我是谁",
-]
 
 DEFAULT_ACTIVITY_PREFETCH_KEYWORDS = [
     "别的群",
@@ -182,8 +161,6 @@ QQ_OFFICIAL_CONTENT_MODE_FALLBACK_PRIORITY = 5
 SEND_OBSERVER_EXTRA = "nuoxiaomiao_send_observer"
 QQ_SCENE_EXTRA = "nuoxiaomiao_qq_scene"
 QQ_PASSIVE_SENDS_EXTRA = "nuoxiaomiao_qq_passive_sends"
-NO_BRAIN_EXTRA = "nuoxiaomiao_no_brain"
-BRAIN_LOCK_WAIT_SECONDS = 180.0
 UNTRACKED_SEND_TYPES = frozenset({
     "reasoning",
     "tool_call",

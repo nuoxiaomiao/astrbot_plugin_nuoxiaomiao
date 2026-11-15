@@ -4,7 +4,7 @@
 
 # IRMIA 功能参考
 
-本次整合参考 [I.R.M.I.A](https://github.com/irmia2026/I.R.M.I.A) 的 `52d3e57` 版本，本地参考目录为 `/tmp/irmia`。上游许可证为 [GNU AGPL v3](https://github.com/irmia2026/I.R.M.I.A/blob/52d3e57/LICENSE)（AGPL-3.0-only）。
+本次整合参考 [I.R.M.I.A](https://github.com/irmia2026/I.R.M.I.A) 的架构与行为设计（包含 `52d3e57` 与后续演进版本的窗口水位与心跳思路）。上游许可证为 [GNU AGPL v3](https://github.com/irmia2026/I.R.M.I.A/blob/52d3e57/LICENSE)（AGPL-3.0-only）。
 
 本插件的 `resident/` 和管理页面围绕 AstrBot 生命周期、工具集、事件钩子及原有 SQLite 记录库独立实现，没有复制 IRMIA 的源代码或第三方技能包。上游作者对上游代码的权利和许可不受影响；今后若引入其源代码，须保留来源、版权声明并遵守相应 AGPL 义务，不能以本说明代替许可证。
 
@@ -12,7 +12,7 @@
 
 # astrmia 行为参考（独立重实现）
 
-2.3.0 的「共享记忆与信箱」分组（全局主脑共享记忆、未读信箱分流、点名通知卡、话题概括、群聊识图）按**行为参考**方式借鉴 [astrmia](https://github.com/Kalospacer/astrbot_plugin_astrmia) 插件的功能设计。本地参考目录为 `/tmp/astrmia`（服务器侧克隆，仅用于查阅公开行为）。
+2.3.0 曾新增的「共享记忆与信箱」分组（全局主脑共享记忆、未读信箱分流、点名通知卡、话题概括、群聊识图）按**行为参考**方式借鉴 [astrmia](https://github.com/Kalospacer/astrbot_plugin_astrmia) 插件的功能设计（仅用于查阅公开行为）；2.5.3 起该分组能力已移除，仅保留信箱未读计数与已读水位数据层。
 
 该仓库没有 LICENSE 文件，GitHub API 报告 `license: None`，按默认法律推定保留所有权利。因此：
 

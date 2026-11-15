@@ -41,13 +41,15 @@ class AutonomyRepository:
             ).fetchone()
             if not row:
                 raise ValueError("运行记录不存在")
-            if row[0] and row[1] == day:
+            if row[0]:
                 return
-            used = conn.execute(
-                "SELECT COUNT(*) FROM resident_runs WHERE day=? AND charged=1", (day,)
-            ).fetchone()[0]
-            if used >= limit:
-                raise BudgetExceeded("今天的自醒次数已用完")
+            limit_val = int(limit)
+            if limit_val > 0:
+                used = conn.execute(
+                    "SELECT COUNT(*) FROM resident_runs WHERE day=? AND charged=1", (day,)
+                ).fetchone()[0]
+                if used >= limit_val:
+                    raise BudgetExceeded("今天的自醒次数已用完")
             conn.execute(
                 "UPDATE resident_runs SET charged=1,status='running',day=? WHERE id=?",
                 (day, run_id),
@@ -103,12 +105,29 @@ class AutonomyRepository:
                 (status, str(detail)[:4000], time.time(), send_id),
             )
 
-    def finish(self, run_id: int, status: str, outcome: str, summary: str = "") -> None:
+    def finish(
+        self,
+        run_id: int,
+        status: str,
+        outcome: str,
+        summary: str = "",
+        preserve_ended: bool = False,
+    ) -> None:
+        now = time.time()
         with self.db.transaction() as conn:
-            conn.execute(
-                "UPDATE resident_runs SET status=?,outcome=?,summary=?,ended=? WHERE id=?",
-                (status, outcome, summary[:4000], time.time(), run_id),
-            )
+            if preserve_ended:
+                conn.execute(
+                    "UPDATE resident_runs SET status=?,outcome=?,summary=?,ended=COALESCE(ended, ?) WHERE id=?",
+                    (status, outcome, summary[:4000], now, run_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE resident_runs SET status=?,outcome=?,summary=?,ended=? WHERE id=?",
+                    (status, outcome, summary[:4000], now, run_id),
+                )
+
+    def update_outcome(self, run_id: int, status: str, outcome: str, summary: str = "") -> None:
+        self.finish(run_id, status, outcome, summary, preserve_ended=True)
 
     def tool_requests(self, run_id: int, response) -> None:
         names = getattr(response, "tools_call_name", None) or []
@@ -170,18 +189,18 @@ class AutonomyRepository:
                 (time.time(),),
             )
 
-    def cleanup_runs(self, retention_days: int) -> dict[str, int]:
+    def cleanup_runs(self, retention_days: int, cutoff_day: str = "") -> dict[str, int]:
         if int(retention_days) <= 0:
             retention_days = 30
         now = time.time()
         cutoff = now - int(retention_days) * 86400
+        usage_cutoff_day = str(cutoff_day or "").strip() or time.strftime("%Y-%m-%d", time.localtime(cutoff))
         removed = {
             "runs": 0,
             "actions": 0,
             "tool_requests": 0,
             "sends": 0,
             "deferred": 0,
-            "topic_segments": 0,
             "daily_usage": 0,
         }
         with self.db.transaction() as conn:
@@ -221,11 +240,8 @@ class AutonomyRepository:
                 "(SELECT id FROM resident_runs) AND pending_id NOT IN "
                 "(SELECT id FROM proactive_pending WHERE status IN ('pending','sending'))"
             ).rowcount
-            removed["topic_segments"] = conn.execute(
-                "DELETE FROM resident_topic_segments WHERE start_ts<?", (cutoff,)
-            ).rowcount
             removed["daily_usage"] = conn.execute(
                 "DELETE FROM resident_daily_usage WHERE day<?",
-                (time.strftime("%Y-%m-%d", time.localtime(cutoff)),),
+                (usage_cutoff_day,),
             ).rowcount
         return removed

@@ -14,23 +14,17 @@ if __package__ and "." in __package__:
     from .autonomy import Autonomy
     from .inbox import Inbox
     from .integration import Integration
-    from .master import Master
     from .persona import Persona
     from .ports import ResidentHost
     from .store import MOODS, Conflict, Store
-    from .topic import Topic
-    from .vision import Vision
 else:
     from infra.constants import PLUGIN_NAME
     from resident.autonomy import Autonomy
     from resident.inbox import Inbox
     from resident.integration import Integration
-    from resident.master import Master
     from resident.persona import Persona
     from resident.ports import ResidentHost
     from resident.store import MOODS, Conflict, Store
-    from resident.topic import Topic
-    from resident.vision import Vision
 
 
 class ResidentServices:
@@ -42,9 +36,6 @@ class ResidentServices:
         self.inbox = Inbox(self)
         self.integration = Integration(self)
         self.autonomy = Autonomy(self)
-        self.vision = Vision(self)
-        self.topic = Topic(self)
-        self.master = Master(self)
 
     def register(self):
         self.host.context.register_web_api(f"/{PLUGIN_NAME}/resident", self.get, ["GET"], "读取糯小喵自主运行状态")
@@ -91,21 +82,32 @@ class ResidentServices:
             s["label"] = self.host.display_conversation_name(
                 s["platform_id"], s["kind"], s["conversation_id"], s.get("name", "")
             )
-            s["topic"] = self.topic.session_topic(s["umo"]) if self.plugin.topic_summary_enabled else ""
         if not umo and sessions:
             umo = sessions[0]["umo"]
-        persona = base_hash = ""
-        state = {"persona": "", "umo": umo, "mood": None, "focus": ""}
-        style = {"version": 0, "body": ""}
-        proposals = versions = []
+        persona = ""
+        state = {"persona": "", "umo": umo, "mood": None, "focus": "", "focus_updated": None}
         if umo:
-            persona, base_hash = await self.persona.resolve(self.web_event(umo))
+            persona, _ = await self.persona.resolve(self.web_event(umo))
             state = self.store.state(persona, umo)
-            style = self.store.style(persona)
-            proposals = self.store.persona_repo.proposals_with_diff(persona, style["body"])
-            versions = self.store.persona_repo.versions(persona)
-            for s in sessions:
-                s.update(self.inbox.counts(persona, s))
+            batch_fn = getattr(self.inbox, "batch_counts", None)
+            if callable(batch_fn):
+                counts_res = batch_fn(persona, sessions)
+                if isinstance(counts_res, dict):
+                    for s in sessions:
+                        key = (str(s["platform_id"]), str(s["kind"]), str(s["conversation_id"]))
+                        val = counts_res.get(key)
+                        if val is None and "umo" in s:
+                            val = counts_res.get(s["umo"])
+                        s.update(val if isinstance(val, dict) else {"unread": 0, "unread_mentions": 0})
+                elif isinstance(counts_res, list) and len(counts_res) == len(sessions):
+                    for s, val in zip(sessions, counts_res):
+                        s.update(val if isinstance(val, dict) else {"unread": 0, "unread_mentions": 0})
+                else:
+                    for s in sessions:
+                        s.update(self.inbox.counts(persona, s))
+            else:
+                for s in sessions:
+                    s.update(self.inbox.counts(persona, s))
         runs = self.store.rows(
             "SELECT * FROM resident_runs WHERE (?=0 OR id<?) ORDER BY id DESC LIMIT 50",
             (before, before),
@@ -139,24 +141,29 @@ class ResidentServices:
             run["deferred"] = def_map.get(rid, [])
             if rid in self.autonomy.runs:
                 run["status"] = self.autonomy.runs[rid].status
+        today_fn = getattr(self.host, "today_in_tz", None)
+        today = today_fn() if callable(today_fn) else datetime.now().strftime("%Y-%m-%d")
         return {
             "umo": umo,
             "persona": persona,
-            "base_hash": base_hash,
             "state": state,
-            "style": style,
-            "proposals": proposals,
-            "versions": versions,
             "moods": list(MOODS),
             "runs": runs,
             "next_before": runs[-1]["id"] if len(runs) == 50 else None,
             "sessions": sessions,
             "capabilities": self.integration.capabilities(umo),
             "tools": self.integration.catalog(),
-            "budget": self.store.budget(datetime.now().strftime("%Y-%m-%d")),
+            "budget": self.store.budget(today),
             "migration": self.store.meta("tools_migration"),
             "unknown_sends": self.store.rows(
                 "SELECT id,target_umo,note FROM proactive_pending WHERE status='unknown' ORDER BY id DESC LIMIT 50"
+            ),
+            "unknown_runs": self.store.rows(
+                "SELECT id,umo,started,summary FROM resident_runs "
+                "WHERE status='unknown' "
+                "AND NOT EXISTS (SELECT 1 FROM resident_actions a WHERE a.run_id=resident_runs.id AND a.status='unknown') "
+                "AND NOT EXISTS (SELECT 1 FROM resident_sends s WHERE s.run_id=resident_runs.id AND s.status='unknown') "
+                "ORDER BY id DESC LIMIT 50"
             ),
         }
 
@@ -234,8 +241,24 @@ class ResidentServices:
                     )
                     if updated.rowcount != 1:
                         raise Conflict("该发送记录不存在或已核实")
+            elif action == "review_run":
+                conclusion = body.get("conclusion")
+                note = str(body.get("note", "")).strip()
+                if conclusion not in ("interrupted", "failed", "succeeded") or len(note) > 2000:
+                    raise ValueError("核实结果须为 interrupted / failed / succeeded，依据最多 2000 字")
+                with self.store.transaction() as db:
+                    updated = db.execute(
+                        "UPDATE resident_runs SET status=?,summary=summary || ? WHERE id=? AND status='unknown'",
+                        (
+                            conclusion,
+                            "\n管理员核实：" + (note or "已人工确认"),
+                            int(body.get("run_id", 0)),
+                        ),
+                    )
+                    if updated.rowcount != 1:
+                        raise Conflict("该运行不存在或已核实")
             else:
-                persona, base_hash = await self.persona.resolve(self.web_event(umo))
+                persona, _ = await self.persona.resolve(self.web_event(umo))
                 if persona.startswith("@session:"):
                     raise ValueError("当前会话没有可管理的人设")
                 if action == "state":
@@ -244,18 +267,8 @@ class ResidentServices:
                         umo,
                         body.get("mood"),
                         body.get("intensity"),
-                        body.get("focus", ""),
-                    )
-                elif action in ("approve", "reject", "rollback"):
-                    if type(body.get("expected_version")) is not int:
-                        raise ValueError("缺少当前风格版本，请刷新")
-                    self.store.change_style(
-                        persona,
-                        action,
-                        body["expected_version"],
-                        int(body.get("proposal_id", 0)),
-                        int(body.get("version", 0)),
-                        base_hash,
+                        body.get("focus"),
+                        clear_focus=bool(body.get("clear_focus", False)),
                     )
                 else:
                     raise ValueError("未知操作")
@@ -273,7 +286,14 @@ class ResidentServices:
         except (ValueError, TypeError, KeyError) as exc:
             return jsonify({"status": "ok", "data": {"operation_error": str(exc)}})
 
-    async def update_state(self, event, mood, intensity, focus):
+    async def update_state(
+        self,
+        event,
+        mood: str = "",
+        intensity: int | float | None = None,
+        focus: str | None = None,
+        clear_focus: bool = False,
+    ) -> str:
         p = self.plugin
         if not p.enabled or not p.resident_state_enabled:
             return json.dumps({"error": "当前状态功能已关闭"}, ensure_ascii=False)
@@ -281,16 +301,13 @@ class ResidentServices:
         if persona.startswith("@session:"):
             raise ValueError("当前会话没有可管理的人设")
         return json.dumps(
-            self.store.update_state(persona, event.unified_msg_origin, mood, intensity, focus),
+            self.store.update_state(
+                persona,
+                event.unified_msg_origin,
+                mood,
+                intensity,
+                focus,
+                clear_focus=bool(clear_focus),
+            ),
             ensure_ascii=False,
-        )
-
-    async def propose_style(self, event, content, reason):
-        if not self.plugin.enabled or not self.plugin.resident_state_enabled:
-            return json.dumps({"error": "当前状态功能已关闭"}, ensure_ascii=False)
-        persona, base_hash = await self.persona.resolve(event)
-        if persona.startswith("@session:"):
-            raise ValueError("当前会话没有可管理的人设")
-        return json.dumps(
-            self.store.propose(persona, content, reason, base_hash), ensure_ascii=False
         )

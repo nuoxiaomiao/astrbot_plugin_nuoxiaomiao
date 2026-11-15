@@ -428,74 +428,6 @@
     "hint": "留空用内置词表。",
     "group": "聊天记录与参考"
   },
-  "lmem_gateway_enabled": {
-    "description": "【聊天记录与参考】按需查长期记忆",
-    "type": "bool",
-    "default": true,
-    "hint": "需安装 LivingMemory；不可用则跳过。",
-    "group": "聊天记录与参考"
-  },
-  "lmem_gateway_keywords": {
-    "description": "【聊天记录与参考】记忆触发词",
-    "type": "list",
-    "default": [
-      "还记得",
-      "记不记得",
-      "忘了吗",
-      "忘了没",
-      "回忆",
-      "上次",
-      "之前",
-      "以前",
-      "那天",
-      "当时",
-      "早就说过",
-      "我说过",
-      "答应",
-      "约定",
-      "我的喜好",
-      "我喜欢",
-      "我的生日",
-      "我是谁"
-    ],
-    "hint": "留空用内置词表。",
-    "group": "聊天记录与参考"
-  },
-  "lmem_gateway_top_k": {
-    "description": "【聊天记录与参考】最多记忆条数",
-    "type": "int",
-    "default": 4,
-    "slider": {
-      "min": 1,
-      "max": 20,
-      "step": 1
-    },
-    "group": "聊天记录与参考"
-  },
-  "lmem_gateway_timeout_seconds": {
-    "description": "【聊天记录与参考】检索超时（秒）",
-    "type": "float",
-    "default": 2.5,
-    "hint": "超时放弃，不卡聊天。",
-    "slider": {
-      "min": 0.3,
-      "max": 10,
-      "step": 0.5
-    },
-    "group": "聊天记录与参考"
-  },
-  "lmem_gateway_max_chars": {
-    "description": "【聊天记录与参考】记忆字数上限",
-    "type": "int",
-    "default": 600,
-    "hint": "超出截断。",
-    "slider": {
-      "min": 100,
-      "max": 4000,
-      "step": 100
-    },
-    "group": "聊天记录与参考"
-  },
   "proactive_enabled": {
     "description": "【主动消息】允许主动消息",
     "type": "bool",
@@ -585,7 +517,7 @@
     "description": "【主动消息】静默结束",
     "type": "string",
     "default": "08:00",
-    "hint": "HH:MM；到点恢复发送。",
+    "hint": "HH:MM；仅顺延主动发送，不阻止自醒。",
     "group": "主动消息"
   },
   "proactive_silent_wake_enabled": {
@@ -605,11 +537,11 @@
   "proactive_silent_wake_target_mean_minutes": {
     "description": "【自醒】目标均值（分）",
     "type": "float",
-    "default": 30,
+    "default": 45,
     "hint": "须在下限+1 与上限−1 之间。",
     "slider": {
       "min": 6,
-      "max": 59,
+      "max": 239,
       "step": 1
     },
     "group": "自醒"
@@ -641,8 +573,8 @@
   "proactive_silent_wake_daily_budget": {
     "description": "【自醒】每日自醒上限",
     "type": "int",
-    "default": 15,
-    "hint": "0=不自醒。",
+    "default": 0,
+    "hint": "0=不限制每日自醒次数；设正数则按天限次（关闭自醒请直接关上方总开关）。",
     "slider": {
       "min": 0,
       "max": 60,
@@ -738,13 +670,6 @@
     "hint": "QQ 官方不支持合并转发，开启后将 Node/Nodes 展开为普通文本和图片。",
     "group": "QQ 官方"
   },
-  "force_wake_prefix": {
-    "description": "【高级】唤醒前缀",
-    "type": "string",
-    "default": "",
-    "hint": "通常留空。",
-    "group": "高级"
-  },
   "merge_localize_images_dir": {
     "description": "【消息合并】图片目录",
     "type": "string",
@@ -767,14 +692,6 @@
     "hint": "留空用内置文案。",
     "group": "高级"
   },
-  "capability_hint_text": {
-    "description": "【高级】能力提示",
-    "type": "text",
-    "textarea": true,
-    "default": "",
-    "hint": "留空用内置索引。",
-    "group": "高级"
-  },
   "capability_context_digest": {
     "description": "【高级】每轮提供其他群近况",
     "type": "bool",
@@ -789,20 +706,6 @@
     "hint": "留空用 data 目录。",
     "group": "高级"
   },
-  "lmem_gateway_plugin_name": {
-    "description": "【高级】记忆插件名",
-    "type": "string",
-    "default": "LivingMemory",
-    "hint": "通常无需修改。",
-    "group": "高级"
-  },
-  "lmem_gateway_recall_tool_name": {
-    "description": "【高级】检索工具名",
-    "type": "string",
-    "default": "recall_long_term_memory",
-    "hint": "通常无需修改。",
-    "group": "高级"
-  },
   "resident_inbox_enabled": {
     "description": "【聊天记录与参考】信箱数据层（未读计数与已读标记）",
     "type": "bool",
@@ -814,7 +717,7 @@
     "description": "【自主状态】自主状态",
     "type": "bool",
     "default": true,
-    "hint": "风格提案需管理员批准。",
+    "hint": "记录并在请求时注入当前心情与本会话关注点。",
     "group": "自主状态"
   },
   "resident_extra_tools": {
@@ -854,248 +757,6 @@
       "min": 0,
       "max": 100000000,
       "step": 1000
-    }
-  },
-  "shared_memory_enabled": {
-    "description": "【共享记忆与信箱】全局主脑",
-    "type": "bool",
-    "default": false,
-    "hint": "多群共享同一段记忆；默认关闭。",
-    "group": "共享记忆与信箱"
-  },
-  "master_umo": {
-    "description": "【共享记忆与信箱】主脑会话编号",
-    "type": "string",
-    "default": "",
-    "hint": "如 napcat:GroupMessage:12345。",
-    "group": "共享记忆与信箱"
-  },
-  "master_auto_bind": {
-    "description": "【共享记忆与信箱】自动绑定主脑",
-    "type": "bool",
-    "default": true,
-    "hint": "首次管理员私聊时绑定。",
-    "group": "共享记忆与信箱"
-  },
-  "unread_inbox_enabled": {
-    "description": "【共享记忆与信箱】未读信箱分流（群里未点名不回复）",
-    "type": "bool",
-    "default": false,
-    "hint": "未点名的群消息静默收进信箱；需要先开启「记录聊天」。",
-    "group": "共享记忆与信箱"
-  },
-  "inbox_group_whitelist": {
-    "description": "【共享记忆与信箱】信箱群白名单",
-    "type": "list",
-    "default": [],
-    "hint": "群号/群名（QQ 官方请填群 openid）；留空=不限。分流只在记录范围内生效。",
-    "group": "共享记忆与信箱"
-  },
-  "inbox_group_blacklist": {
-    "description": "【共享记忆与信箱】信箱群黑名单",
-    "type": "list",
-    "default": [],
-    "hint": "群号/群名（QQ 官方请填群 openid）；优先于白名单。",
-    "group": "共享记忆与信箱"
-  },
-  "mention_notice_enabled": {
-    "description": "【共享记忆与信箱】点名通知卡",
-    "type": "bool",
-    "default": false,
-    "hint": "唤醒时附带未读与近况；只把卡片展示过的几条标为已读。",
-    "group": "共享记忆与信箱"
-  },
-  "mention_notice_limit": {
-    "description": "【共享记忆与信箱】通知卡条数",
-    "type": "int",
-    "default": 20,
-    "hint": "卡片最多带多少条；也就是一次最多标记已读多少条。",
-    "group": "共享记忆与信箱",
-    "slider": {
-      "min": 1,
-      "max": 30,
-      "step": 1
-    }
-  },
-  "topic_summary_enabled": {
-    "description": "【共享记忆与信箱】话题概括",
-    "type": "bool",
-    "default": false,
-    "hint": "用轻量模型压成一句话题；需要先开启「记录聊天」。",
-    "group": "共享记忆与信箱"
-  },
-  "topic_light_provider_id": {
-    "description": "【共享记忆与信箱】话题模型",
-    "type": "string",
-    "default": "",
-    "hint": "留空用会话默认。",
-    "group": "共享记忆与信箱"
-  },
-  "topic_min_unread": {
-    "description": "【共享记忆与信箱】最少未读条数",
-    "type": "int",
-    "default": 5,
-    "hint": "不足不触发。",
-    "group": "共享记忆与信箱",
-    "slider": {
-      "min": 1,
-      "max": 50,
-      "step": 1
-    }
-  },
-  "topic_cooldown_seconds": {
-    "description": "【共享记忆与信箱】概括冷却（秒）",
-    "type": "int",
-    "default": 180,
-    "hint": "防高频群反复调用。",
-    "group": "共享记忆与信箱",
-    "slider": {
-      "min": 0,
-      "max": 3600,
-      "step": 30
-    }
-  },
-  "topic_max_chars": {
-    "description": "【共享记忆与信箱】话题字数",
-    "type": "int",
-    "default": 24,
-    "hint": "一句话最多多少字。",
-    "group": "共享记忆与信箱",
-    "slider": {
-      "min": 4,
-      "max": 60,
-      "step": 1
-    }
-  },
-  "topic_line_max_chars": {
-    "description": "【共享记忆与信箱】单条截断字数",
-    "type": "int",
-    "default": 120,
-    "hint": "喂给模型前截断。",
-    "group": "共享记忆与信箱",
-    "slider": {
-      "min": 20,
-      "max": 300,
-      "step": 10
-    }
-  },
-  "topic_timeout_seconds": {
-    "description": "【共享记忆与信箱】概括超时（秒）",
-    "type": "float",
-    "default": 10,
-    "hint": "超时放弃本轮。",
-    "group": "共享记忆与信箱",
-    "slider": {
-      "min": 1,
-      "max": 60,
-      "step": 1
-    }
-  },
-  "topic_segment_msg_count": {
-    "description": "【共享记忆与信箱】分段条数",
-    "type": "int",
-    "default": 25,
-    "hint": "攒够多少条成一段。",
-    "group": "共享记忆与信箱",
-    "slider": {
-      "min": 5,
-      "max": 200,
-      "step": 5
-    }
-  },
-  "topic_segment_backfill_max": {
-    "description": "【共享记忆与信箱】补段条数",
-    "type": "int",
-    "default": 5,
-    "hint": "除本段外多带多少条后续消息做衔接（不推进游标）。",
-    "group": "共享记忆与信箱",
-    "slider": {
-      "min": 0,
-      "max": 50,
-      "step": 1
-    }
-  },
-  "vision_enabled": {
-    "description": "【共享记忆与信箱】群聊识图",
-    "type": "bool",
-    "default": false,
-    "hint": "图片留底并自动转述。",
-    "group": "共享记忆与信箱"
-  },
-  "vision_provider_ids": {
-    "description": "【共享记忆与信箱】识图模型链",
-    "type": "list",
-    "default": [],
-    "hint": "每行一个，按序回退。",
-    "group": "共享记忆与信箱"
-  },
-  "image_keep_days": {
-    "description": "【共享记忆与信箱】图片保留天数",
-    "type": "int",
-    "default": 3,
-    "hint": "到期清理；填 0 按至少保留 1 天处理（不会一次删光）。",
-    "group": "共享记忆与信箱",
-    "slider": {
-      "min": 0,
-      "max": 90,
-      "step": 1
-    }
-  },
-  "vision_image_max": {
-    "description": "【共享记忆与信箱】单条最多图片",
-    "type": "int",
-    "default": 6,
-    "group": "共享记忆与信箱",
-    "slider": {
-      "min": 1,
-      "max": 20,
-      "step": 1
-    }
-  },
-  "vision_brief_max_chars": {
-    "description": "【共享记忆与信箱】自动转述字数",
-    "type": "int",
-    "default": 80,
-    "hint": "后台描述最长字数。",
-    "group": "共享记忆与信箱",
-    "slider": {
-      "min": 10,
-      "max": 300,
-      "step": 10
-    }
-  },
-  "vision_read_max_chars": {
-    "description": "【共享记忆与信箱】read_image 字数",
-    "type": "int",
-    "default": 500,
-    "group": "共享记忆与信箱",
-    "slider": {
-      "min": 50,
-      "max": 2000,
-      "step": 50
-    }
-  },
-  "vision_timeout_seconds": {
-    "description": "【共享记忆与信箱】识图超时（秒）",
-    "type": "float",
-    "default": 60,
-    "hint": "超时放弃。",
-    "group": "共享记忆与信箱",
-    "slider": {
-      "min": 3,
-      "max": 300,
-      "step": 3
-    }
-  },
-  "vision_cache_ttl_days": {
-    "description": "【共享记忆与信箱】缓存天数",
-    "type": "int",
-    "default": 30,
-    "group": "共享记忆与信箱",
-    "slider": {
-      "min": 1,
-      "max": 365,
-      "step": 1
     }
   }
 }

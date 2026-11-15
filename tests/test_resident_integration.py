@@ -106,7 +106,10 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 }
             ),
             get_sections=AsyncMock(
-                return_value={"aiocqhttp:GroupMessage:20001": "本群今天读一本书"}
+                return_value={
+                    "nuoxiaomiao:FriendMessage:self_wake": "本轮独立自醒计划",
+                    "aiocqhttp:GroupMessage:20001": "本群今天读一本书",
+                }
             ),
         )
         reader = ReaderTools(
@@ -122,7 +125,7 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcome, (True, "quiet"))
         receipt = p.resident.store.rows("SELECT * FROM resident_actions")[0]
         self.assertEqual(receipt["status"], "succeeded")
-        self.assertIn("本群今天读一本书", receipt["result"])
+        self.assertIn("本轮独立自醒计划", receipt["result"])
         self.assertNotIn("私聊中的秘密", receipt["result"])
         self.assertEqual(len(provider.calls), 2)
 
@@ -206,7 +209,7 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 send = AstrHeFunctionTool(name="send_message", fn=p.send_message) if AstrHeFunctionTool is not None else tool("send_message", p.send_message)
                 outcome, _ = await self.wake(
                     p,
-                    [self.call("send_message", {"intent": "问候"}), self.end()],
+                    [self.call("send_message", {"target": "群:20001", "intent": "问候"}), self.end()],
                     ToolSet([send]),
                     AsyncMock(return_value=False),
                 )
@@ -326,13 +329,15 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
         p.self_wake.select_provider.assert_not_called()
         self.assertEqual(provider.calls, [])
 
-    async def test_api_proposal_conflict_keeps_current_and_review_resolves_unknown(
+    async def test_api_state_update_and_review_conflict_resolves_unknown(
         self,
     ):
         p = self.make()
         service = p.resident
-        persona, base_hash = await service.persona.resolve(FakeEvent())
-        proposal = service.store.propose(persona, "少用感叹号", "表达更自然", base_hash)
+        day = time.strftime("%Y-%m-%d")
+        rid = service.store.new_run(FakeEvent().unified_msg_origin, "default", day)
+        aid = service.store.action(rid, "send_message", {"intent": "hi"})
+        service.store.end_action(aid, "unknown", "中断")
         app = Quart(__name__)
 
         async def post(body):
@@ -342,20 +347,16 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 json={"umo": FakeEvent().unified_msg_origin, **body},
             ):
                 from quart import g
-                g.username = "admin"  # 模拟平台认证（审查 P0-1）
+                g.username = "admin"
                 return (await (await service.mutate()).get_json())["data"]
 
-        saved = await post(
-            {"action": "approve", "proposal_id": proposal["id"], "expected_version": 0}
-        )
-        self.assertEqual(saved["style"]["version"], 1)
-        conflict = await post(
-            {"action": "rollback", "version": 0, "expected_version": 0}
-        )
+        saved = await post({"action": "state", "mood": "开心", "intensity": 75, "focus": "关注点"})
+        self.assertEqual(saved["state"]["mood"]["mood"], "开心")
+        self.assertEqual(saved["state"]["focus"], "关注点")
+        reviewed = await post({"action": "review", "action_id": aid, "conclusion": "succeeded", "note": ""})
+        self.assertNotIn("operation_error", reviewed)
+        conflict = await post({"action": "review", "action_id": aid, "conclusion": "failed", "note": ""})
         self.assertIn("operation_error", conflict)
-        self.assertEqual(service.store.style(persona)["body"], "少用感叹号")
-        rolled = await post({"action": "rollback", "version": 0, "expected_version": 1})
-        self.assertEqual(rolled["style"]["body"], "")
 
     async def test_host_dispatch_preserves_memory_and_astrna_request_hooks(self):
         from astrbot.core.star.star_handler import (
@@ -458,8 +459,10 @@ class ResidentIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 conversation_name="群",
             )
         )
-        result = await p.resident.inbox.read(FakeEvent(), mode="unread")
-        self.assertEqual([row["platform_id"] for row in result["results"]], ["other"])
+        listed = await p.resident.inbox.read(FakeEvent())
+        self.assertEqual([c["umo"] for c in listed["conversations"]], ["other:GroupMessage:20001"])
+        result = await p.resident.inbox.read(FakeEvent(), conversation="other:GroupMessage:20001")
+        self.assertEqual([row["umo"] for row in result["results"]], ["other:GroupMessage:20001"])
 
     async def test_revoked_plugin_and_dynamic_addition_do_not_expand_current_run(self):
         from resident.autonomy import ScopedExecutor, Run

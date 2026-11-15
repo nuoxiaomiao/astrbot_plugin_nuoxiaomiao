@@ -13,7 +13,7 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.core.message.components import Plain
 from astrbot.core.message.message_event_result import MessageChain
 
-from infra.constants import ActivityEntry, DISPLAY_NAME, SELF_WAKE_EVENT_EXTRA
+from infra.constants import ActivityEntry, SELF_WAKE_EVENT_EXTRA
 from tests.fakes import FakeContext, FakeEvent, FakeProvider, make_proactive_plugin
 
 
@@ -177,62 +177,14 @@ class SelfWakeIdentityTest(unittest.IsolatedAsyncioTestCase):
             context=FakeContext(admins=["10001"]), **cfg
         )
 
-    async def test_pick_session_ignores_bot_only_private_activity(self):
+    async def test_pick_session_uses_dedicated_virtual_session(self):
+        from infra.constants import SELF_WAKE_UMO
+
         plugin = self._plugin(proactive_allow_groups=["20001"])
-        now = time.time()
-        plugin.activity.record_activity(
-            ActivityEntry(
-                platform_id="aiocqhttp",
-                ts=now,
-                sender_id="bot",
-                sender_name=DISPLAY_NAME,
-                conversation_id="10001",
-                conversation_name="Scheduler",
-                kind="private",
-                text="自言自语",
-            )
-        )
-        plugin.activity.record_activity(
-            ActivityEntry(
-                platform_id="aiocqhttp",
-                ts=now - 3600,
-                sender_id="9",
-                sender_name="路人",
-                conversation_id="20001",
-                conversation_name="猫娘群",
-                kind="group",
-                text="大家好",
-            )
-        )
-
         picked = await plugin.self_wake.pick_session()
-
         self.assertIsNotNone(picked)
-        self.assertEqual(picked["kind"], "group")
-        self.assertEqual(picked["id"], "20001")
-        self.assertTrue(picked["umo"].endswith("GroupMessage:20001"))
-        await plugin.terminate()
-
-    async def test_pick_session_falls_back_to_allow_groups_without_humans(self):
-        plugin = self._plugin(proactive_allow_groups=["20001"])
-        plugin.activity.record_activity(
-            ActivityEntry(
-                platform_id="aiocqhttp",
-                ts=time.time(),
-                sender_id="bot",
-                sender_name=DISPLAY_NAME,
-                conversation_id="20001",
-                conversation_name="Scheduler",
-                kind="private",
-                text="独白",
-            )
-        )
-
-        picked = await plugin.self_wake.pick_session()
-
-        self.assertIsNotNone(picked)
-        self.assertEqual(picked["kind"], "group")
-        self.assertEqual(picked["id"], "20001")
+        self.assertEqual(picked["platform_id"], "nuoxiaomiao")
+        self.assertEqual(picked["umo"], SELF_WAKE_UMO)
         await plugin.terminate()
 
     async def test_on_llm_response_skips_self_wake_events(self):
@@ -258,7 +210,7 @@ class SelfWakeIdentityTest(unittest.IsolatedAsyncioTestCase):
         from astrbot.core.agent.tool import ToolSet
 
         plugin = self._plugin()
-        allowed = tool("list_conversations", AsyncMock())
+        allowed = tool("read_conversation_messages", AsyncMock())
         event = FakeEvent(message_str="醒来")
         event.set_extra(SELF_WAKE_EVENT_EXTRA, True)
         req = ProviderRequest()
@@ -324,9 +276,11 @@ class SelfWakeIdentityTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(ok)
         self.assertEqual(outcome, "quiet")
+        from infra.constants import SELF_WAKE_UMO
+
         event = wake_events[0]
-        self.assertFalse(event.is_private_chat())
-        self.assertEqual(event.get_group_id(), "20001")
+        self.assertTrue(event.is_private_chat())
+        self.assertEqual(event.unified_msg_origin, SELF_WAKE_UMO)
         self.assertEqual(event.get_sender_id(), "10001")
         conn = plugin.db.get_connection()
         run_row = conn.execute(
@@ -405,11 +359,12 @@ class SelfWakeTurnTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('"target_kind"', text)
         await plugin.terminate()
 
-    async def test_no_session_skips_without_budget(self):
+    async def test_no_admin_skips_without_budget(self):
         plugin = self._plugin(
             proactive_allow_groups=[],
             proactive_target_whitelist=[],
         )
+        plugin.activity.admin_ids = lambda: set()
         day = time.strftime("%Y-%m-%d")
         before = plugin.resident.store.budget(day)["used"]
         ok, outcome = await plugin.self_wake.run_turn(30.0, 0.1, 0.01)
@@ -417,11 +372,6 @@ class SelfWakeTurnTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcome, "skipped")
         plugin.self_wake.settle_turn(ok, outcome, time.time())
         self.assertEqual(plugin.resident.store.budget(day)["used"], before)
-        conn = plugin.db.get_connection()
-        row = conn.execute(
-            "SELECT outcome FROM resident_runs ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        self.assertEqual(row[0], "skipped")
         await plugin.terminate()
 
     async def test_settle_self_wake_turn_semantics(self):
@@ -437,7 +387,7 @@ class SelfWakeTurnTest(unittest.IsolatedAsyncioTestCase):
 
         plugin.self_wake.settle_turn(True, "skipped", time.time())
         self.assertEqual(plugin.resident.store.budget(day)["used"], 0)
-        self.assertGreater(plugin.self_wake._last_human_ts, 1000.0)
+        self.assertEqual(plugin.self_wake._last_human_ts, 1000.0)
 
         used = plugin.resident.store.budget(day)["used"]
         plugin.self_wake.settle_turn(True, "quiet", time.time())
@@ -509,21 +459,29 @@ class SelfWakeTurnTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["outcome"], "spoke")
         self.assertTrue(row["said"])
 
-        delivered["result"] = {"error": "目标不在白名单"}
+        delivered["result"] = {"status": "skipped", "error": "目标不在白名单"}
         row2 = {"started_ts": 2.0}
         ok2, outcome2 = await plugin.self_wake.run_fallback(row2, 25.0)
         self.assertTrue(ok2)
-        self.assertEqual(row2["outcome"], "quiet")
+        self.assertEqual(outcome2, "skipped")
+        self.assertEqual(row2["outcome"], "skipped")
         self.assertNotIn("said", row2)
+
+        delivered["result"] = {"status": "failed", "error": "平台发送失败"}
+        row3 = {"started_ts": 3.0}
+        ok3, outcome3 = await plugin.self_wake.run_fallback(row3, 25.0)
+        self.assertFalse(ok3)
+        self.assertEqual(outcome3, "error")
+        self.assertEqual(row3["outcome"], "error")
         await plugin.terminate()
 
-    async def test_pick_session_respects_allowlist(self):
+    async def test_pick_session_returns_self_wake_umo_independent_of_allowlist(self):
+        from infra.constants import SELF_WAKE_UMO
+
         plugin = self._plugin(proactive_allow_groups=["90000"])
         picked = await plugin.self_wake.pick_session()
         self.assertIsNotNone(picked)
-        self.assertEqual(picked["kind"], "group")
-        self.assertEqual(picked["id"], "90000")
-        self.assertIn("GroupMessage:90000", picked["umo"])
+        self.assertEqual(picked["umo"], SELF_WAKE_UMO)
         await plugin.terminate()
 
     async def test_config_defaults(self):
